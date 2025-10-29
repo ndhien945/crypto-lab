@@ -2,29 +2,29 @@
 #include <stdint.h>
 #include <time.h>
 
-typedef unsigned int uint;
-#define SIZEOF_UINT (sizeof(uint) * 8)
+typedef unsigned int u32;
+#define SIZEOF_u32 (sizeof(u32) * 8)
 
 #define N 200000000
 
 // Branch version
-static inline uint u1_shr_branch(uint num, uint amnt) {
-	if (amnt >= SIZEOF_UINT) return 0;
+static inline u32 u1_shr_branch(u32 num, u32 amnt) {
+	if (amnt >= SIZEOF_u32) return 0;
 	return num >> amnt;
 }
 
 // Branchless version
-static inline uint u1_shr_bl(uint num, uint amnt) {
-	return (num >> (amnt & (SIZEOF_UINT - 1))) & -(amnt < SIZEOF_UINT);
+static inline u32 u1_shr_bl(u32 num, u32 amnt) {
+	return (num >> (amnt & (SIZEOF_u32 - 1))) & -(amnt < SIZEOF_u32);
 }
 
 int main() {
-	uint sum = 0;
+	u32 sum = 0;
 	clock_t start, end;
 
 	// Test data
-	uint nums[4] = {0xFFFFFFFF, 0x12345678, 0x0F0F0F0F, 0x80000000};
-	uint shifts[4] = {0, 5, 31, 40}; // include out-of-range
+	u32 nums[4] = {0xFFFFFFFF, 0x12345678, 0x0F0F0F0F, 0x80000000};
+	u32 shifts[4] = {0, 5, 31, 40}; // include out-of-range
 
 	// Branch version
 	start = clock();

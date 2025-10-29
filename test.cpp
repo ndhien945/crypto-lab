@@ -11,7 +11,7 @@
 #include <iostream>
 #include "cigint.h"
 
-using u32 = uint32_t;
+using uint = uint32_t;
 static inline uint64_t now_ns() {
   using namespace std::chrono;
   return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
@@ -114,7 +114,7 @@ int main(){
   std::mt19937_64 rng(12345);
   auto rand_cig = [&]{
     Cigint x = {0};
-    for (size_t i=0;i<CIGINT_N;++i) x.data[i] = (u32)rng();
+    for (size_t i=0;i<CIGINT_N;++i) x.data[i] = (uint)rng();
     // ensure non-zero LSW sometimes
     x.data[CIGINT_N-1] |= 1u;
     return x;
