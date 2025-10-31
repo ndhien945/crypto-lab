@@ -22,7 +22,7 @@ def get_git_diff():
         exit(1)
 
 def generate_commit_message(diff_text):
-    """Generate commit message using a free model on OpenRouter."""
+    """Generate a commit message using a free model on OpenRouter."""
     prompt = f"""
     You are a helpful assistant that writes clear and concise git commit messages.
     Based on the following diff, write a short, single-line commit message using 

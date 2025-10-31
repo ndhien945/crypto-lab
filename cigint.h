@@ -433,6 +433,30 @@ Cigint cigint_sub(Cigint lhs, CFREF(Cigint) rhs) {
 	return lhs;
 }
 
+void cigint_mul_ref_old(Cigint *lhs, Cigint *rhs) {
+	Cigint res = CIGINT_ZERO();
+	while (!cigint_is0_ref(rhs)) {
+		if (u1_get_bit(rhs->data[CIGINT_N - 1], 0) == 1) {
+			cigint_add_ref(&res, lhs);
+		}
+		*lhs = cigint_shl(*lhs, 1);
+		*rhs = cigint_shr(*rhs, 1);
+	}
+	*lhs = res;
+}
+
+Cigint cigint_mul_old(Cigint lhs, Cigint rhs) {
+	Cigint res = CIGINT_ZERO();
+	while (!cigint_is0(rhs)) {
+		if (u1_get_bit(rhs.data[CIGINT_N - 1], 0) == 1) {
+			cigint_add(res, lhs);
+		}
+		lhs = cigint_shl(lhs, 1);
+		rhs = cigint_shr(rhs, 1);
+	}
+	return lhs;
+}
+
 void cigint_mul_ref(Cigint *lhs, const Cigint *rhs) {
 	Cigint tmp = CIGINT_ZERO();
 	u64 carry = 0;
@@ -440,24 +464,25 @@ void cigint_mul_ref(Cigint *lhs, const Cigint *rhs) {
 	for (size_t k = 0; k < CIGINT_N; ++k) {
 		u64 acc = carry;
 		for (size_t i = 0; i <= k; ++i) {
-			printf("acc-b: %llu\n", acc);
+			// printf("acc-b: %llu\n", acc);
 			acc += (u64) lhs->data[CIGINT_N - 1 - i] * (u64) rhs->data[CIGINT_N - 1 - (k - i)];
-			printf("acc-a: %llu\n", acc);
+			// printf("acc-a: %llu\n", acc);
 		}
 		tmp.data[CIGINT_N - 1 - k] = (u32) acc;
 		carry = acc >> SIZEOF_U32;
-		printf("Carry: %llu\n", carry);
+		// printf("Carry: %llu\n", carry);
 	}
 
 	if (carry != 0) {
-		fprintf(stderr, "Cigint overflow in multiplication: result truncated\n");
-		assert(0 && "Cigint overflow – increase CIGINT_N or use dynamic bigint");
+		// printf("Carry: %llu\n", carry);
+		// fprintf(stderr, "Cigint overflow in multiplication: result truncated\n");
+		// assert(0 && "Cigint overflow – increase CIGINT_N or use dynamic bigint");
 	}
 
 	*lhs = tmp;
 }
 
-void cigint_mul_ref22(Cigint *lhs, const Cigint *rhs) {
+void cigint_mul_ref2(Cigint *lhs, const Cigint *rhs) {
 	Cigint tmp = CIGINT_ZERO();
 	__uint128_t carry = 0;
 
@@ -470,6 +495,34 @@ void cigint_mul_ref22(Cigint *lhs, const Cigint *rhs) {
 		tmp.data[CIGINT_N - 1 - k] = (u32)acc;
 		carry = acc >> 32;
 	}
+	*lhs = tmp;
+}
+
+void cigint_mul_ref3(Cigint *lhs, const Cigint *rhs) {
+	Cigint tmp = CIGINT_ZERO();
+	u64 carry = 0;
+
+	// Loop from least significant position (rightmost index) to most (leftmost)
+	// But since data[0] is MSB, we reverse index order properly.
+	for (ssize_t k = CIGINT_N - 1; k >= 0; --k) {
+		u64 acc = carry;
+
+		// inner loop handles all digit pairs whose product contributes to position k
+		for (ssize_t i = CIGINT_N - 1; i >= k; --i) {
+			ssize_t j = (CIGINT_N - 1) - (i - k); // ensures i + j = k + (N-1)
+			if (j < 0 || j >= (ssize_t) CIGINT_N) continue;
+			acc += (u64)lhs->data[i] * (u64)rhs->data[j];
+		}
+
+		tmp.data[k] = (u32)acc;
+		carry = acc >> 32;
+	}
+
+	if (carry != 0) {
+		// fprintf(stderr, "Cigint overflow in multiplication: result truncated\n");
+		// assert(0 && "Cigint overflow – increase CIGINT_N or use dynamic bigint");
+	}
+
 	*lhs = tmp;
 }
 
