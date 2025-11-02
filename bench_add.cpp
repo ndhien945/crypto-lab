@@ -10,21 +10,20 @@
 
 using namespace std::chrono;
 
-constexpr int ITER = 1000000;
-
 void cigint_fill_random(Cigint* cig) {
 	for (size_t i = 0; i < CIGINT_N; i++) {
-		cig->data[i] = rand() % 0xFFFFFFFF;
+		u32 r = (u32)rand();
+		r = (r << 16) ^ (u32)rand();
+		cig->data[i] = r;
 	}
 }
 
-#include <atomic>   // for atomic_signal_fence
+#include "benchmark.h"
 // observable sink to block DCE
 static volatile u32 g_sink = 0;
 inline void consume(const Cigint& x) {
-    u32 acc = 0;
-    for (size_t i = 0; i < CIGINT_N; ++i) acc ^= x.data[i];
-    g_sink ^= acc;
+	u32 acc = 0;
+	for (size_t i = 0; i < CIGINT_N; ++i) acc ^= x.data[i]; g_sink ^= acc;
 }
 
 // ------------------------------------------------------------
@@ -32,35 +31,11 @@ inline void consume(const Cigint& x) {
 // ------------------------------------------------------------
 template<typename F>
 void bench_func(const std::string& name, F f, const Cigint& a, const Cigint& b) {
-    volatile F fp = f;   // block inlining
-    Cigint r = a;
-
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-    auto t0 = steady_clock::now();
-
-    // ---- first iteration ----
-    r = (*fp)(a, b);
-    consume(r);
-
-    auto t1 = steady_clock::now();
-
-    // ---- remaining iterations ----
-    for (int i = 1; i < ITER; ++i) {
-        r = (*fp)(a, b);
-        consume(r);
-    }
-
-    auto t2 = steady_clock::now();
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-
-    auto first_ns = duration_cast<nanoseconds>(t1 - t0).count();
-    auto total_ns = duration_cast<nanoseconds>(t2 - t0).count();
-    double mean_ns = double(total_ns) / double(ITER);
-
-    std::cout << std::left << std::setw(25) << name
-              << "| first: " << std::right << std::setw(10) << first_ns << " ns"
-              << "| total: " << std::setw(12) << total_ns << " ns"
-              << "| mean: "  << std::setw(10) << std::fixed << std::setprecision(2) << mean_ns << " ns\n";
+    volatile F fp = f; // block inlining
+	bench(name, [&]{
+        Cigint r = (*fp)(a, b);
+		consume(r);
+	});
 }
 
 // ------------------------------------------------------------
@@ -70,82 +45,12 @@ void bench_func(const std::string& name, F f, const Cigint& a, const Cigint& b) 
 template<typename F>
 void bench_func_ref(const std::string& name, F f, const Cigint& a, const Cigint& b) {
     volatile F fp = f;
-    Cigint x = a, y = b;
-
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-    auto t0 = steady_clock::now();
-
-    // ---- first iteration ----
-    {
-        Cigint x_copy = x;
-    	Cigint y_copy = b;
-    	(*fp)(&x_copy, &y);
-    	if (y_copy != y) {
-    		cigint_printf("%Cd\n", y);
-    	}
-
-        consume(x_copy);
-    }
-    auto t1 = steady_clock::now();
-
-    // ---- remaining iterations ----
-    for (int i = 1; i < ITER; ++i) {
-        Cigint x_copy = x;
-        (*fp)(&x_copy, &y);
-        consume(x_copy);
-    }
-    auto t2 = steady_clock::now();
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-
-    auto first_ns = duration_cast<nanoseconds>(t1 - t0).count();
-    auto total_ns = duration_cast<nanoseconds>(t2 - t0).count();
-    double mean_ns = double(total_ns) / double(ITER);
-
-    std::cout << std::left << std::setw(25) << name
-              << "| first: " << std::right << std::setw(10) << first_ns << " ns"
-              << "| total: " << std::setw(12) << total_ns << " ns"
-              << "| mean: "  << std::setw(10) << std::fixed << std::setprecision(2) << mean_ns << " ns\n";
-}
-
-// ------------------------------------------------------------
-// 3) in-place, RHS MUTATES: void f(Cigint*, Cigint*)
-//    (your bench_func_ref_mut)
-// ------------------------------------------------------------
-template<typename F>
-void bench_func_ref_mut(const std::string& name, F f, const Cigint& a, const Cigint& b) {
-    volatile F fp = f;
-
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-    auto t0 = steady_clock::now();
-
-    // ---- first iteration ----
-    {
+	bench(name, [&]{
         Cigint x = a;
-        Cigint y = b;
+		Cigint y = b;
         (*fp)(&x, &y);
-        consume(x);
-    }
-    auto t1 = steady_clock::now();
-
-    // ---- remaining iterations ----
-    for (int i = 1; i < ITER; ++i) {
-        Cigint x = a;
-        Cigint y = b;
-        (*fp)(&x, &y);
-        consume(x);
-    }
-
-    auto t2 = steady_clock::now();
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-
-    auto first_ns = duration_cast<nanoseconds>(t1 - t0).count();
-    auto total_ns = duration_cast<nanoseconds>(t2 - t0).count();
-    double mean_ns = double(total_ns) / double(ITER);
-
-    std::cout << std::left << std::setw(25) << name
-              << "| first: " << std::right << std::setw(10) << first_ns << " ns"
-              << "| total: " << std::setw(12) << total_ns << " ns"
-              << "| mean: "  << std::setw(10) << std::fixed << std::setprecision(2) << mean_ns << " ns\n";
+		consume(x);
+	});
 }
 
 // ------------------------------------------------------------
@@ -153,43 +58,15 @@ void bench_func_ref_mut(const std::string& name, F f, const Cigint& a, const Cig
 //    (your bench_func_refex)
 // ------------------------------------------------------------
 template<typename F>
-void bench_func_refex(const std::string& name, F f,
-                      const Cigint& a, const Cigint& b, const Cigint& r0) {
-    volatile F fp = f;
-
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-    auto t0 = steady_clock::now();
-
-    // ---- first iteration ----
-    {
-        Cigint lhs = a;
-        Cigint rhs = b;
-        Cigint res = r0;
-        (*fp)(&lhs, &rhs, &res);
-        consume(res);
-    }
-    auto t1 = steady_clock::now();
-
-    // ---- remaining iterations ----
-    for (int i = 1; i < ITER; ++i) {
-        Cigint lhs = a;
-        Cigint rhs = b;
-        Cigint res = r0;
-        (*fp)(&lhs, &rhs, &res);
-        consume(res);
-    }
-
-    auto t2 = steady_clock::now();
-    std::atomic_signal_fence(std::memory_order_seq_cst);
-
-    auto first_ns = duration_cast<nanoseconds>(t1 - t0).count();
-    auto total_ns = duration_cast<nanoseconds>(t2 - t0).count();
-    double mean_ns = double(total_ns) / double(ITER);
-
-    std::cout << std::left << std::setw(25) << name
-              << "| first: " << std::right << std::setw(10) << first_ns << " ns"
-              << "| total: " << std::setw(12) << total_ns << " ns"
-              << "| mean: "  << std::setw(10) << std::fixed << std::setprecision(2) << mean_ns << " ns\n";
+void bench_func_refex(const std::string& name, F f, const Cigint& a, const Cigint& b, const Cigint& r0) {
+	volatile F fp = f;
+	bench(name, [&]{
+		Cigint lhs = a;
+		Cigint rhs = b;
+		Cigint res = r0;
+		(*fp)(&lhs, &rhs, &res);
+		consume(res);
+	});
 }
 
 Cigint cigint_add_fast_1(Cigint a, Cigint b) {
@@ -389,19 +266,18 @@ Cigint cigint_add_fast_2_d_o(Cigint a, Cigint b) {
 	return a;
 }
 
-#include <immintrin.h>
-
-static inline void cigint_add_adc_ip(Cigint* a, const Cigint* b) {
-	unsigned char c = 0;
-	for (size_t i = CIGINT_N; i-- > 0;) {
-		c = _addcarry_u32(c, a->data[i], b->data[i], &a->data[i]);
-	}
-}
-
-static inline Cigint cigint_add_adc(Cigint x, const Cigint& y) {
-	cigint_add_adc_ip(&x, &y);
-	return x;
-}
+// #include <immintrin.h>
+// static inline void cigint_add_adc_ip(Cigint* a, const Cigint* b) {
+// 	unsigned char c = 0;
+// 	for (size_t i = CIGINT_N; i-- > 0;) {
+// 		c = _addcarry_u32(c, a->data[i], b->data[i], &a->data[i]);
+// 	}
+// }
+//
+// static inline Cigint cigint_add_adc(Cigint x, const Cigint& y) {
+// 	cigint_add_adc_ip(&x, &y);
+// 	return x;
+// }
 
 void cigint_add_ref_old(Cigint *lhs, Cigint *rhs) {
 	while (!cigint_is0_ref(rhs)) {
@@ -425,62 +301,6 @@ void benchmark() {
 	cigint_fill_random(&a);
 	cigint_fill_random(&b);
 	Cigint r = a;
-	// cprintf("a = %Cd\n", a);
-	// cprintf("b = %Cd\n", b);
-	// cigint_add_fast_1_a(&r, &b);
-	// cprintf("+ = %Cd\n", r);
-	//
-	// // a = 1;
-	// a = 0xFFFFFFFF;
-	// b = 0xFFFFFFFF;
-	// r = a;
-	// r = cigint_add_fast_1(r, b);
-	// cprintf("1  = %Cd\n", r);
-	// r = a;
-	// r = cigint_add_fast_2(r, b);
-	// cprintf("2  = %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_1_a(&r, &b);
-	// cprintf("1a = %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_1_r(&r, &b);
-	// cprintf("1r = %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_2_r(&r, &b);
-	// cprintf("2r = %Cd\n", r);
-	// // r = a;
-	// // cigint_add_fast_2_a(&r, &b);
-	// // cprintf("2a = %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_2_a_i(&r, &b);
-	// cprintf("2ai= %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_2_b(&r, &b);
-	// cprintf("2b = %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_2_b_i(&r, &b);
-	// cprintf("2bi= %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_2_b_iii(&r, &b);
-	// cprintf("2b3= %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_2_b_iv(&r, &b);
-	// cprintf("2b4= %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_2_b_ii(&r, &b);
-	// cprintf("2b2= %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_2_b_ptr(&r, &b);
-	// cprintf("2b2= %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_2_b_ptr2(&r, &b);
-	// cprintf("2b2= %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_2_d(&r, &b);
-	// cprintf("2d = %Cd\n", r);
-	// r = a;
-	// cigint_add_fast_2_c(&r, &b);
-	// cprintf("2c = %Cd\n", r);
 
 	// a = 1;
 	// b = 2;
@@ -500,19 +320,22 @@ void benchmark() {
 
 	cigint_fill_random(&a);
 	cigint_fill_random(&b);
-	cprintf("a = %Cd\n", a);
-	cprintf("b = %Cd\n", b);
+	cigint_printf("a = %Cd\n", a);
+	std::cout << "a = " << a << "\n";
+	std::cout << "b = " << b << "\n";
+	bench_func_ref("add_ref", cigint_add_ref, a, b);
 	bench_func_ref("add_ref", cigint_add_ref, a, b);
 	bench_func_ref("add_ref_old", cigint_add_ref_old, a, b);
 	bench_func("add_old", cigint_add_old, a, b);
+	bench_func("add", cigint_add, a, b);
 	bench_func_ref("mul_ref", cigint_mul_ref, a, b);
 	bench_func_refex("mul_refex", cigint_mul_refex, a, b, r);
 	bench_func_ref("mul_ref2", cigint_mul_ref2, a, b);
 	bench_func_ref("mul_ref3", cigint_mul_ref3, a, b);
 	bench_func_ref("mul_ref_old", cigint_mul_ref_old, a, b);
 	bench_func("mul_old", cigint_mul_old, a, b);
-	cprintf("a = %Cd\n", a);
-	cprintf("b = %Cd\n", b);
+	std::cout << "a = " << a << "\n";
+	std::cout << "b = " << b << "\n";
 }
 
 int main() {
@@ -520,3 +343,17 @@ int main() {
 	benchmark();
 	return 0;
 }
+
+// a = 759480307011953463468328532656259629625734757261525159780721102534358014148939345155444885268762564303576054958843407900809783642799109643494134892615670
+// b = 1851399520923607203120963818347025007257247084972234839639630771977617926347525576181116318869116385755354715237252143688539590208070507383212645245605940
+// add_ref                   | first:        300 ns | total_loop:      1166800 ns | mean_loop:      11.67 ns | total_body:      3062500 ns | mean_body:      30.62 ns
+// add_ref                   | first:        200 ns | total_loop:      1200800 ns | mean_loop:      12.01 ns | total_body:      4206500 ns | mean_body:      42.06 ns
+// add_ref_old               | first:      16600 ns | total_loop:     15198000 ns | mean_loop:     151.98 ns | total_body:     18317500 ns | mean_body:     183.18 ns
+// add_old                   | first:        400 ns | total_loop:     15977800 ns | mean_loop:     159.78 ns | total_body:     17229700 ns | mean_body:     172.30 ns
+// add                       | first:        200 ns | total_loop:      1117700 ns | mean_loop:      11.18 ns | total_body:      3691300 ns | mean_body:      36.91 ns
+// mul_ref                   | first:        600 ns | total_loop:      5419900 ns | mean_loop:      54.20 ns | total_body:      8105700 ns | mean_body:      81.06 ns
+// mul_refex                 | first:        300 ns | total_loop:      5233700 ns | mean_loop:      52.34 ns | total_body:     10210500 ns | mean_body:     102.11 ns
+// mul_ref2                  | first:        600 ns | total_loop:     18298400 ns | mean_loop:     182.98 ns | total_body:     19707300 ns | mean_body:     197.07 ns
+// mul_ref3                  | first:        500 ns | total_loop:      5980800 ns | mean_loop:      59.81 ns | total_body:      8533400 ns | mean_body:      85.33 ns
+// mul_ref_old               | first:      14900 ns | total_loop:   1128302400 ns | mean_loop:   11283.02 ns | total_body:   1105397200 ns | mean_body:   11053.97 ns
+// mul_old                   | first:       9800 ns | total_loop:    919708900 ns | mean_loop:    9197.09 ns | total_body:    932545400 ns | mean_body:    9325.45 ns
