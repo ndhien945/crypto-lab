@@ -17,7 +17,7 @@
 #define CIGINT_IMPLEMENTATION
 #define CIGINT_STRIP_PREFIX
 #define CIGINT_N (1024 / 32)
-#include "cigint.h"
+#include "../cigint.h"
 
 /* ---------- small helpers on Cigint ---------- */
 

@@ -4,7 +4,7 @@
 #define CIGINT_IMPLEMENTATION
 #define CIGINT_STRIP_PREFIX
 #define CIGINT_N (512 / 32)
-#include "cigint.h"
+#include "../cigint.h"
 
 // we use the same small r as your Python
 static constexpr int R = 14;
@@ -191,10 +191,8 @@ static Poly poly_mul_cyclic_kara14(const Poly& A, const Poly& B, const Cigint& m
     // Split A,B into halves of 7
     Cigint A0[7], A1[7], B0[7], B1[7];
     for (int i = 0; i < 7; ++i) {
-        A0[i] = A.c[i];
-        A1[i] = A.c[i + 7];
-        B0[i] = B.c[i];
-        B1[i] = B.c[i + 7];
+        A0[i] = A.c[i]; A1[i] = A.c[i + 7];
+        B0[i] = B.c[i]; B1[i] = B.c[i + 7];
     }
 
     // Z0 = A0 * B0 (len 13), Z2 = A1 * B1 (len 13)

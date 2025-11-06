@@ -5,7 +5,7 @@
 #define CIGINT_IMPLEMENTATION
 #define CIGINT_STRIP_PREFIX
 #define CIGINT_N (512 / 32)
-#include "cigint.h"
+#include "../cigint.h"
 
 // we use the same small r as your Python
 static constexpr int R = 14;

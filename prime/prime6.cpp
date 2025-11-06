@@ -1,10 +1,11 @@
 #include <array>
+#include <vector>
 #include <cstdio>
 
 #define CIGINT_IMPLEMENTATION
 #define CIGINT_STRIP_PREFIX
 #define CIGINT_N (512 / 32)
-#include "cigint.h"
+#include "../cigint.h"
 
 // we use the same small r as your Python
 static constexpr int R = 14;
@@ -13,8 +14,58 @@ struct Poly{
 	std::array<Cigint, R> c;
 };
 
+// -------- basic Cigint helpers --------
 static inline Cigint z0() { return CIGINT_ZERO(); }
 static inline Cigint z1() { return cigint_from_u32(1u); }
+
+#include <iostream>
+
+// anti-overflow add mod
+// u32 addmod(u32 a, u32 b, u32 m) {
+//     if (a >= m) a %= m;
+//     if (b >= m) b %= m;
+//     u32 c = a + b;
+//     if (c < a) c -= m;
+//     if (c >= m) c -= m;
+//     return c;
+// }
+
+void cigint_add_wrap(Cigint *lhs, const Cigint *rhs) {
+	u64 carry = 0;
+	for (size_t i = CIGINT_N; i-- > 0;) {
+		carry = (u64) lhs->data[i] + (u64) rhs->data[i] + carry;
+		lhs->data[i] = (u32) carry;
+		carry >>= 32;
+	}
+}
+
+// res = (a + b) mod m (all fixed width)
+static inline void add_mod(Cigint& res, Cigint& b, const Cigint &m) {
+	Cigint res_c = res;
+	cigint_divmod_ref(&res, &m, NULL, &res);
+	cigint_divmod_ref(&b, &m, NULL, &b);
+	cigint_add_wrap(&res, &b);
+	if (res < res_c) {
+		cigint_sub_ref(&res, &m);
+	}
+	if (cigint_cmp(res, m) >= 0) {
+		cigint_sub_ref(&res, &m);
+	}
+}
+
+// static Cigint mul_mod_safe(Cigint a, Cigint b, const Cigint &m) {
+// 	// cigint_divmod_ref(&a, &m, NULL, &a);
+// 	// cigint_divmod_ref(&b, &m, NULL, &b);
+// 	Cigint res = z0();
+// 	u32 bits = cigint_highest_order(b);
+// 	for (u32 i = 0; i < bits; ++i) {
+// 		if (cigint_get_bit(b, i)) {
+// 			add_mod(res, a, m);
+// 		}
+// 		add_mod(a, a, m);
+// 	}
+// 	return res;
+// }
 
 static inline u32 cigint_add_wrap_carry(Cigint *lhs, const Cigint *rhs) {
     u64 carry = 0;
@@ -42,17 +93,103 @@ static inline void dbl_mod_fast(Cigint &x, const Cigint &m) {
     u32 carry = 0;
     for (size_t i = CIGINT_N; i-- > 0;) {
         u32 v = x.data[i];
-        u32 nv = v << 1 | carry;
+        u32 nv = (v << 1) | carry;
         carry = v >> 31;
         x.data[i] = nv;
     }
     if (carry || cigint_cmp(x, m) >= 0) cigint_sub_ref(&x, &m);
 }
 
+/* ====== 4-bit window mul-mod (MSW-first), standard-only ======
+ * r = (a * b) % m
+ * - Reduce a,b once (so they stay < m)
+ * - Precompute T[d] = d*a (mod m) for d in {0..15}
+ * - Scan b nibble-by-nibble MSW→LSW
+ * Complexity: O(N²) with small constants, ~4× fewer adds vs bit-by-bit
+ */
+static Cigint mul_mod_win4(Cigint a, Cigint b, const Cigint &m) {
+    a = cigint_mod(a, m);
+    b = cigint_mod(b, m);
+    if (cigint_is0(a) || cigint_is0(b)) return CIGINT_ZERO();
+
+    /* table T[0..15] */
+    Cigint T[16];
+    for (int i = 0; i < 16; ++i) T[i] = CIGINT_ZERO();
+    T[1] = a;
+    T[2] = a; dbl_mod_fast(T[2], m);            // 2a
+    T[4] = T[2]; dbl_mod_fast(T[4], m);         // 4a
+    T[8] = T[4]; dbl_mod_fast(T[8], m);         // 8a
+    for (int d = 3; d < 16; ++d) {
+        if (d == 4 || d == 8) continue;
+        Cigint acc = CIGINT_ZERO();
+        if (d & 1) add_mod_fast(acc, T[1], m);
+        if (d & 2) add_mod_fast(acc, T[2], m);
+        if (d & 4) add_mod_fast(acc, T[4], m);
+        if (d & 8) add_mod_fast(acc, T[8], m);
+        T[d] = acc;               // T[d] < m
+    }
+
+    Cigint res = CIGINT_ZERO();
+    u32 bits = cigint_highest_order(b);        // 0..(32*CIGINT_N)
+    if (bits == 0) return res;
+    u32 nibbles = (bits + 3u) / 4u;
+    u32 capacity = (u32)CIGINT_N * 8u;         // 8 nibbles per 32-bit limb
+    u32 skip = capacity - nibbles;             // leading zero nibbles to skip
+
+    bool first = true;
+    u32 seen = 0;
+
+    for (size_t i = 0; i < CIGINT_N; ++i) {
+        u32 v = b.data[i];
+        for (int k = 0; k < 8; ++k) {          // MSW nibble first
+            if (seen++ < skip) continue;
+            u32 d = (v >> (28 - 4*k)) & 0xFu;
+            if (first) {
+                if (d) res = T[d];             // res < m
+                first = false;
+            } else {
+                // multiply by 16 via 4 doublings
+                dbl_mod_fast(res, m);
+                dbl_mod_fast(res, m);
+                dbl_mod_fast(res, m);
+                dbl_mod_fast(res, m);
+                if (d) add_mod_fast(res, T[d], m);
+            }
+        }
+    }
+    if (first) return CIGINT_ZERO();           // b == 0
+    return res;                                // < m
+}
+
+/* (optional) keep the old name but route to the fast one */
+static inline Cigint mul_mod_safe(Cigint a, Cigint b, const Cigint &m) {
+    return mul_mod_win4(a, b, m);
+}
+
+
+// poly multiplication mod (x^R - 1, m)
+// C[k] = sum_{i+j≡k mod R} A[i]*B[j] (mod m)
+static Poly poly_mul(const Poly &A, const Poly &B, const Cigint &m) {
+	Poly C;
+	for (int i = 0; i < R; ++i) C.c[i] = z0();
+
+	for (int i = 0; i < R; ++i) {
+		if (cigint_is0(A.c[i])) continue;
+		for (int j = 0; j < R; ++j) {
+			if (cigint_is0(B.c[j])) continue;
+			int idx = (i + j) % R;
+			Cigint prod = mul_mod_safe(A.c[i], B.c[j], m);
+			add_mod(C.c[idx], prod, m);
+		}
+	}
+	return C;
+}
+
 // compute n mod R using your own bigint division
-static u32 cigint_mod_small(const Cigint &n, u32 m) {
+static u32 cigint_mod_small(const Cigint &n, u32 mod) {
+	Cigint q;
 	u32 r = 0;
-	cigint_sdivmod(n, m, NULL, &r); // r = n % mod
+	cigint_sdivmod(n, mod, &q, &r);  // r = n % mod
 	return r;
 }
 
@@ -73,7 +210,7 @@ static bool poly_is_xn_plus_1(const Poly &P, const Cigint &n, const Cigint &m) {
 static inline Cigint mul_mod_win4_trusted(Cigint a, const Cigint &b, const Cigint &m) {
 	if (cigint_is0(a) || cigint_is0(b)) return CIGINT_ZERO();
 
-	Cigint T[16]; for (auto & i : T) i = CIGINT_ZERO();
+	Cigint T[16]; for (int i = 0; i < 16; ++i) T[i] = CIGINT_ZERO();
 	T[1] = a;
 	T[2] = a; dbl_mod_fast(T[2], m);
 	T[4] = T[2]; dbl_mod_fast(T[4], m);
@@ -94,14 +231,13 @@ static inline Cigint mul_mod_win4_trusted(Cigint a, const Cigint &b, const Cigin
 	u32 skip = 8u * (u32)CIGINT_N - total_nibbles;
 
 	u32 seen = 0; bool first = true;
-	for (unsigned int v : b.data) {
-			for (int k = 0; k < 8; ++k) {
+	for (size_t i = 0; i < CIGINT_N; ++i) {
+		u32 v = b.data[i];
+		for (int k = 0; k < 8; ++k) {
 			if (seen++ < skip) continue;
 			u32 d = (v >> (28 - 4*k)) & 0xFu;
-			if (first) {
-				if (d) res = T[d];
-				first = false;
-			} else {
+			if (first) { if (d) res = T[d]; first = false; }
+			else {
 				dbl_mod_fast(res, m); dbl_mod_fast(res, m);
 				dbl_mod_fast(res, m); dbl_mod_fast(res, m);
 				if (d) add_mod_fast(res, T[d], m);
@@ -129,138 +265,6 @@ static Poly poly_mul_fast(const Poly &A, const Poly &B, const Cigint &m) {
 	return C;
 }
 
-#include <cmath>
-using namespace std;
-
-// === Karatsuba cyclic multiply for R=14 over Z_n ===
-// Assumes: struct Poly { std::array<Cigint, 14> c; };  // R == 14
-// Requires: cigint_cmp, cigint_add_ref, cigint_sub_ref, cigint_divmod_ref,
-//           CIGINT_ZERO(), CIGINT_N, and your limb layout (MSW at data[0]).
-
-static inline void add_mod_big(Cigint& x, const Cigint& y, const Cigint& modn) {
-    uint64_t carry=0;
-    for (size_t i=CIGINT_N; i-- > 0; ) {
-        uint64_t t = (uint64_t)x.data[i] + y.data[i] + carry;
-        x.data[i] = (uint32_t)t;
-        carry = t >> 32;
-    }
-    if (carry || cigint_cmp(x, modn) >= 0) cigint_sub_ref(&x, &modn);
-}
-
-// --- replace sub_mod_big, add_mod_big (unchanged), mul_mod_big+linconv7_mod ---
-
-static inline void sub_noborrow_ip(Cigint &x, const Cigint &y) {
-    uint64_t borrow = 0;
-    for (size_t i = CIGINT_N; i-- > 0;) {
-        uint64_t xi = x.data[i];
-        uint64_t yi = (uint64_t)y.data[i] + borrow;
-        uint64_t d  = xi - yi;
-        borrow = (xi < yi);
-        x.data[i] = (uint32_t)d;
-    }
-}
-
-static inline void add_nocarry_ip(Cigint &x, const Cigint &y) {
-    uint64_t carry = 0;
-    for (size_t i = CIGINT_N; i-- > 0;) {
-        uint64_t t = (uint64_t)x.data[i] + y.data[i] + carry;
-        x.data[i] = (uint32_t)t;
-        carry = t >> 32;
-    }
-}
-
-/* x = (x - y) mod modn; requires 0<=x<modn and 0<=y<modn on entry */
-static inline void sub_mod_big(Cigint& x, const Cigint& y, const Cigint& modn) {
-    if (cigint_cmp(x, y) >= 0) {
-        // x := x - y
-        sub_noborrow_ip(x, y);
-    } else {
-        // x := x + modn - y
-        Cigint tmp = x;
-        add_nocarry_ip(tmp, modn);   // tmp = x + modn  (no overflow since x<modn)
-        sub_noborrow_ip(tmp, y);     // tmp -= y
-        x = tmp;
-    }
-    // normalize: result is < 2*modn; bring it into [0, modn)
-    if (cigint_cmp(x, modn) >= 0) cigint_sub_ref(&x, &modn);
-}
-
-/* use your trusted window-4 mul here for consistency/speed */
-static inline Cigint mul_mod_big(Cigint a, const Cigint& b, const Cigint& modn) {
-    return mul_mod_win4_trusted(a, b, modn);
-}
-
-/* linear convolution 7×7 over Z_modn (coeffs always raeduced) */
-static void linconv7_mod(const Cigint A[7], const Cigint B[7], const Cigint& modn, Cigint out[13]) {
-    for (int i = 0; i < 13; ++i) out[i] = CIGINT_ZERO();
-    for (int i = 0; i < 7; ++i) {
-        if (cigint_is0(A[i])) continue;
-        for (int j = 0; j < 7; ++j) {
-            if (cigint_is0(B[j])) continue;
-            Cigint p = mul_mod_big(A[i], B[j], modn);
-            add_mod_big(out[i + j], p, modn);
-        }
-    }
-}
-
-
-// Karatsuba cyclic multiply for R = 14: C(x) = A(x) * B(x) mod (x^14 - 1, n)
-static Poly poly_mul_cyclic_kara14(const Poly& A, const Poly& B, const Cigint& modn) {
-    // Split A,B into halves of 7
-    Cigint A0[7], A1[7], B0[7], B1[7];
-    for (int i = 0; i < 7; ++i) {
-        A0[i] = A.c[i];
-        A1[i] = A.c[i + 7];
-        B0[i] = B.c[i];
-        B1[i] = B.c[i + 7];
-    }
-
-    // Z0 = A0 * B0 (len 13), Z2 = A1 * B1 (len 13)
-    Cigint Z0[13], Z2[13];
-    linconv7_mod(A0, B0, modn, Z0);
-    linconv7_mod(A1, B1, modn, Z2);
-
-    // S = A0 + A1, T = B0 + B1  (mod n)
-    Cigint S[7], T[7];
-    for (int i = 0; i < 7; ++i) {
-        S[i] = A0[i]; add_mod_big(S[i], A1[i], modn);
-        T[i] = B0[i]; add_mod_big(T[i], B1[i], modn);
-    }
-
-    // Z1 = (A0+A1)*(B0+B1) (len 13)
-    Cigint Z1[13]; linconv7_mod(S, T, modn, Z1);
-
-    // M = Z1 - Z0 - Z2 (len 13), modulo n
-    Cigint M[13];
-    for (int i = 0; i < 13; ++i) {
-        M[i] = Z1[i];
-        sub_mod_big(M[i], Z0[i], modn);
-        sub_mod_big(M[i], Z2[i], modn);
-    }
-
-    // Combine into cyclic length-14:
-    // C[k] = Z0[k] + Z2[k] + M[(k-7) mod 14], but M is defined 0..12 -> use (t+7) mod 14 placement.
-    Poly C; for (int k=0;k<14;++k) C.c[k] = CIGINT_ZERO();
-
-    for (int t = 0; t < 13; ++t) { // Z0, Z2 land at indices t (no extra folding needed)
-        add_mod_big(C.c[t], Z0[t], modn);
-        add_mod_big(C.c[t], Z2[t], modn);
-    }
-    // M rotated by +7: add M[t] to C[(t+7) % 14]
-    for (int t = 0; t < 13; ++t) {
-        int k = t + 7; if (k >= 14) k -= 14;
-        add_mod_big(C.c[k], M[t], modn);
-    }
-    // Note: maximum degree in Z* arrays is 12 (since 6+6), so no further folding needed.
-
-    return C;
-}
-
-// Hook: use this instead of your previous poly_mul_fast in the exponentiation core.
-static inline Poly POLY_MUL(const Poly& A, const Poly& B, const Cigint& modn) {
-    return poly_mul_cyclic_kara14(A, B, modn);
-}
-
 
 /* (1+x)^n mod (x^R-1, n) with 4-bit window on polynomials */
 static Poly poly_pow_1x_win4(const Cigint &n, const Cigint &modn) {
@@ -272,7 +276,7 @@ static Poly poly_pow_1x_win4(const Cigint &n, const Cigint &modn) {
 	Poly P[16];
 	P[0] = Poly{}; for (int i = 0; i < R; ++i) P[0].c[i] = CIGINT_ZERO();
 	P[1] = base;
-	for (int d = 2; d <= 15; ++d) P[d] = POLY_MUL(P[d - 1], base, modn);
+	for (int d = 2; d <= 15; ++d) P[d] = poly_mul_fast(P[d - 1], base, modn);
 
 	// res = 1
 	Poly res; for (int i = 0; i < R; ++i) res.c[i] = CIGINT_ZERO();
@@ -287,8 +291,9 @@ static Poly poly_pow_1x_win4(const Cigint &n, const Cigint &modn) {
 	bool first = true;
 	u32 seen = 0;
 
-	for (unsigned int v : n.data) {
-			for (int k = 0; k < 8; ++k) {
+	for (size_t i = 0; i < CIGINT_N; ++i) {
+		u32 v = n.data[i];
+		for (int k = 0; k < 8; ++k) {
 			if (seen++ < skip) continue;
 			u32 d = (v >> (28 - 4*k)) & 0xFu;
 
@@ -296,12 +301,12 @@ static Poly poly_pow_1x_win4(const Cigint &n, const Cigint &modn) {
 				if (d) res = P[d];
 				first = false;
 			} else {
-				// 4 squaring (res = res^(16))
-				res = POLY_MUL(res, res, modn);
-				res = POLY_MUL(res, res, modn);
-				res = POLY_MUL(res, res, modn);
-				res = POLY_MUL(res, res, modn);
-				if (d) res = POLY_MUL(res, P[d], modn);
+				// 4 squarings (res = res^(16))
+				res = poly_mul_fast(res, res, modn);
+				res = poly_mul_fast(res, res, modn);
+				res = poly_mul_fast(res, res, modn);
+				res = poly_mul_fast(res, res, modn);
+				if (d) res = poly_mul_fast(res, P[d], modn);
 			}
 		}
 	}
@@ -318,6 +323,7 @@ static bool aks_like_cigint(const Cigint &n) {
 }
 
 #include <random>
+
 void cigint_fill_more_random(Cigint *cig) {
 	std::random_device rd;             // Random device
 	std::mt19937 gen(rd());            // Mersenne Twister engine
@@ -339,8 +345,7 @@ Cigint get_random_odd() {
 
 static bool has_small_factor(const Cigint &n) {
 	static const int SMALL_PRIMES[] = {
-		 2, 3, 5, 7,11,13,17,19,23,29,31,37,41,
-		43,47,53,59,61,67,71,73,79,83,89,97
+		2,3,5,7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83,89,97
 		// extend to 1000 if you like
 	};
 	for (int p : SMALL_PRIMES) {
@@ -362,11 +367,14 @@ Cigint gen_prime() {
 int main() {
 	// Cigint n = cigint_from_dec("7669373798138436444425917457853162445620122597663674808454541043947311884377"); //up to 76digit
 	// Cigint n = cigint_from_dec("771458402252315418489174122874340496560720991135040845033515625723932549727443357205751720461233037696609749135759573352834404574203828395431821751181407"); //up to 154 digit
-	// Cigint n = cigint_from_dec("68785536162660004414084120045689084892162254686597696425215272205120048508574098397551086658564179126105400178601774223071432354833665740594087341354341133906161408274754546505739193243119243225335933");
-	// Cigint n = cigint_from_dec("12598680682438752944055149498662865476737841742262510750565369004945449194176119763492007280023309651826310840991041734855800903377926420446403888376677867"); //up to 154 digit
-	Cigint n = cigint_from_dec("137"); //up to 154 digit
+	Cigint n = cigint_from_dec("12598680682438752944055149498662865476737841742262510750565369004945449194176119763492007280023309651826310840991041734855800903377926420446403888376677867"); //up to 154 digit
 
 	// Cigint n = gen_prime();
+	// Cigint a = cigint_from_dec("229911617100");
+	// Cigint b = cigint_from_dec("1199165601554601993");
+	// Cigint r = cigint_mul_2_mod(a, b, n);
+	// std::string r_str = r.toDecStr();
+	// printf("r = %s\n", r_str.c_str());
 	printf("n = ");
 	cigint_print10(n);
 	bool ok = aks_like_cigint(n);

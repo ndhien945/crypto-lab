@@ -13,7 +13,7 @@
 #ifndef CIGINT_N
 #define CIGINT_N (1024 / 32)
 #endif
-#include "cigint.h"
+#include "../cigint.h"
 
 // ---------- small Cigint helpers ----------
 static inline u32 bitlen(const Cigint& n) { return highest_order(n); }

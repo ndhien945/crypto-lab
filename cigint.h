@@ -173,11 +173,11 @@ u32 u1_set_bit(u32 num, u32 pos, u32 val) {
 
 // reverse bits by divide-and-conquer
 u32 u1_bit_reverse(u32 num) {
-    num = ((num & 0x55555555U) << 1) | ((num >> 1) & 0x55555555U);
-    num = ((num & 0x33333333U) << 2) | ((num >> 2) & 0x33333333U);
-    num = ((num & 0x0F0F0F0FU) << 4) | ((num >> 4) & 0x0F0F0F0FU);
-    num = ((num & 0x00FF00FFU) << 8) | ((num >> 8) & 0x00FF00FFU);
-    return (num << 16) | (num >> 16);
+	num = ((num & 0x55555555U) << 1) | ((num >> 1) & 0x55555555U);
+	num = ((num & 0x33333333U) << 2) | ((num >> 2) & 0x33333333U);
+	num = ((num & 0x0F0F0F0FU) << 4) | ((num >> 4) & 0x0F0F0F0FU);
+	num = ((num & 0x00FF00FFU) << 8) | ((num >> 8) & 0x00FF00FFU);
+	return (num << 16) | (num >> 16);
 }
 
 u32 u1_highest_order(u32 num) {
@@ -381,6 +381,17 @@ u32 cigint_highest_order_ref(const Cigint *num) {
 
 u32 cigint_highest_order(CFREF(Cigint) num) {
 	return cigint_highest_order_ref(&num);
+}
+
+u32 cigint_highest_word_ref(const Cigint *num) {
+	for (size_t i = 0; i < CIGINT_N; ++i) {
+		if (num->data[i] > 0) return CIGINT_N - i - 1;
+	}
+	return 0;
+}
+
+u32 cigint_highest_word(CFREF(Cigint) num) {
+	return cigint_highest_word_ref(&num);
 }
 
 Cigint cigint_pow2(u32 amnt) {
@@ -808,67 +819,68 @@ u32 cigint_print16_upper(CFREF(Cigint) a) { return cigint_print16_impl(a, 1); }
 
 #ifdef __cplusplus
 inline u32 cigint_print_spec(char spec, const Cigint &x) {
-    switch (spec) {
-        case 'b': return cigint_print2(x);
-        case 'd': return cigint_print10(x);
-        case 'x': return cigint_print16(x);
-        case 'X': return cigint_print16_upper(x);
-        default:  return 0;
-    }
+	switch (spec) {
+		case 'b': return cigint_print2(x);
+		case 'd': return cigint_print10(x);
+		case 'x': return cigint_print16(x);
+		case 'X': return cigint_print16_upper(x);
+		default:  return 0;
+	}
 }
 
 inline u32 cigint_printf(const char *fmt) {
-    u32 counter = 0;
-    while (*fmt) {
-        if (*fmt == '%' && *(fmt + 1) == '%') {
-            putchar('%');
-            ++counter; fmt += 2;
-        } else {
-            putchar(*fmt++);
-            ++counter;
-        }
-    }
-    return counter;
+	u32 counter = 0;
+	while (*fmt) {
+		if (*fmt == '%' && *(fmt + 1) == '%') {
+			putchar('%');
+			++counter; fmt += 2;
+		} else {
+			putchar(*fmt++);
+			++counter;
+		}
+	}
+	return counter;
 }
 
 template <typename... Rest>
 inline typename std::enable_if<(sizeof...(Rest) >= 0), u32>::type
 cigint_printf(const char *fmt, const Cigint &arg, Rest&&... rest) {
-    u32 counter = 0;
+	u32 counter = 0;
 
-    while (*fmt) {
-        if (*fmt == '%') {
-            ++fmt;
-            // "%%"
-            if (*fmt == '%') {
-                putchar('%');
-                ++counter;
-                ++fmt;
-                continue;
-            }
-            // "%C?"
-            if (*fmt == 'C') {
-				if (char spec = *(fmt + 1); spec == 'b' || spec == 'd' || spec == 'x' || spec == 'X') {
-                    fmt += 2;
-                    counter += cigint_print_spec(spec, arg);
-                    return counter + cigint_printf(fmt, std::forward<Rest>(rest)...);
-                }
+	while (*fmt) {
+		if (*fmt == '%') {
+			++fmt;
+			// "%%"
+			if (*fmt == '%') {
+				putchar('%');
+				++counter;
+				++fmt;
+				continue;
+			}
+			// "%C?"
+			if (*fmt == 'C') {
+				char spec = *(fmt + 1);
+				if (spec == 'b' || spec == 'd' || spec == 'x' || spec == 'X') {
+					fmt += 2;
+					counter += cigint_print_spec(spec, arg);
+					return counter + cigint_printf(fmt, std::forward<Rest>(rest)...);
+				}
 				putchar('%'); ++counter;
 				putchar('C'); ++counter;
 				continue;
 			}
-            putchar('%'); ++counter;
-            if (*fmt) {
-                putchar(*fmt); ++counter;
-                ++fmt;
-            }
-        } else {
-            putchar(*fmt++);
-            ++counter;
-        }
-    }
-    // we reached the end of fmt but still had an arg — just ignore the arg
-    return counter;
+			putchar('%'); ++counter;
+			if (*fmt) {
+				putchar(*fmt); ++counter;
+				++fmt;
+			}
+		} else {
+			putchar(*fmt++);
+			++counter;
+		}
+	}
+	// we reached the end of fmt but still had an arg — just ignore the arg
+	return counter;
 }
 #else
 u32 cigint_printf(const char *fmt, ...) {
