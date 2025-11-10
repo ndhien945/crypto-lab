@@ -301,63 +301,40 @@ inline void shift_left_limb(bul &x, u32 l) {
 }
 
 
+inline bul karatsuba(const bui &a, const bui &b, u32 size) {
+	bul result{}; // final double-sized result
 
+	if (size <= 2) return mul(a, b); // base case
 
-inline bul karatsuba(const bui& a, const bui& b, u32 size) {
-	bul result = {};  // The final result will be a bul.
+	u32 half = BI_N / 2;
 
-	// Base case: simple multiplication for small numbers (when BI_N is small enough)
-	if (size <= 2) {
-		return mul(a, b);  // Use your existing multiplication function for small numbers
-	}
+	// Split a and b into high and low halves
+	bui a_high{}, a_low{}, b_high{}, b_low{};
+	std::copy(a.begin(), a.begin() + half, a_high.begin() + (BI_N - half));
+	std::copy(a.begin() + half, a.end(), a_low.begin() + (BI_N - half));
+	std::copy(b.begin(), b.begin() + half, b_high.begin() + (BI_N - half));
+	std::copy(b.begin() + half, b.end(), b_low.begin() + (BI_N - half));
 
-	int half = BI_N / 2;
+	// Compute subproducts
+	bul z2 = karatsuba(a_high, b_high, half);
+	bul z0 = karatsuba(a_low, b_low, half);
 
-	// Split a into a1 and a0 (top and bottom halves)
-	bui a1 = {}, a0 = {};
-	std::copy_n(a.begin(), half, a1.begin() + BI_N - half);
-	std::copy(a.begin() + half, a.end(), a0.begin() + BI_N - half);
+	bui a_sum = add(a_high, a_low);
+	bui b_sum = add(b_high, b_low);
+	bul z1 = karatsuba(a_sum, b_sum, half);
+	sub_ip(z1, bul_low(z2));
+	sub_ip(z1, bul_low(z0));
 
+	// Shift z2 and z1 accordingly
+	shift_left_limb(z2, 2 * half);
+	shift_left_limb(z1, half);
 
-	// Split b into b1 and b0 (top and bottom halves)
-	bui b1 = {}, b0 = {};
-	std::copy_n(b.begin(), half, b1.begin() + BI_N - half);
-	std::copy(b.begin() + half, b.end(), b0.begin() + BI_N - half);
+	// Combine results
+	add_ip(result, z0);
+	add_ip(result, z1);
+	add_ip(result, z2);
 
-	// Compute z2 = a1 * b1 (this is a 'bui' result)
-	bul tmp = karatsuba(a1, b1, half);
-	bui z2 = bul_low(tmp);
-
-	// Compute z0 = a0 * b0 (this is also a 'bui' result)
-	tmp = karatsuba(a0, b0, half);
-	bui z0 = bul_low(tmp);
-
-	// Compute z1 = (a1 + a0) * (b1 + b0)
-	bui a1_plus_a0 = add(a1, a0);
-	bui b1_plus_b0 = add(b1, b0);
-	tmp = karatsuba(a1_plus_a0, b1_plus_b0, half);
-	bui z1 = bul_low(tmp);
-
-	// Adjust the results with shifts to combine them into the final result
-	// z2 needs to be shifted by (2 * half * 32) bits
-	bui h = bui_from_u32(1 << (2 * half * 32));
-	bul temp1 = mul(z2, h); // Shift z2 left by 2 * half * 32
-
-	// z0 needs to be shifted by (half * 32) bits
-	bul temp2 = mul(z0, h);  // Shift z0 left by half * 32
-
-	// Now combine: result = temp1 + (z1 - z2 - z0) + temp2
-	sub_ip(z1, z2); // z1 = z1 - z2
-	sub_ip(z1, z0); // z1 = z1 - z0
-	add_ip(result, temp1);  // result += temp1 (z2 * 10^(2m))
-	add_ip(result, bui_to_bul(z1));     // result += z1 (intermediate sum)
-	add_ip(result, temp2);  // result += temp2 (z0 * 10^m)
 	return result;
-}
-
-inline bul karatsuba_test(bui& a, bui& b) {
-	u32 n = std::max(highest_limb(a), highest_limb(b));
-	return karatsuba(a, b, n);
 }
 
 #endif
