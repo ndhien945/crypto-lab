@@ -121,6 +121,32 @@ inline void add_ip(bul& a, const bul& b) {
 	}
 }
 
+inline void add_ip_n(u32* a, const u32* b, const u32 size) {
+	u32 c = 0, i = size;
+	while (i-- > 0) {
+#ifdef GNU_BUILTIN
+		c = __builtin_add_overflow(a[i], b[i] + c, &a[i]);
+#else
+		u64 s = (u64)a[i] + b[i] + c;
+		a[i] = (u32)s;
+		c = s >> 32;
+#endif
+	}
+}
+
+inline void add_n(const u32* a, const u32* b, u32* r, const u32 size) {
+	u32 c = 0, i = size;
+	while (i-- > 0) {
+#ifdef GNU_BUILTIN
+		c = __builtin_add_overflow(a[i], b[i] + c, &r[i]);
+#else
+		u64 s = (u64)a[i] + b[i] + c;
+		r[i] = (u32)s;
+		c = s >> 32;
+#endif
+	}
+}
+
 // r = a + b
 inline bui add(bui a, const bui& b) {
 	add_ip(a, b);
@@ -145,22 +171,45 @@ inline void add_mod_ip(bui &a, const bui &b, const bui &m) {
 }
 
 // a -= b; // assume a > b
-#ifdef GNU_BUILTIN
-inline void sub_ip(bui& a, const bui& b) {
-	u32 borrow = 0, i = BI_N;
-	while (i-- > 0)
-		borrow = __builtin_sub_overflow(a[i], b[i] + borrow, &a[i]);
-}
-#else
 inline void sub_ip(bui& a, const bui& b) {
 	u32 borrow = 0, i = BI_N;
 	while (i-- > 0) {
+#ifdef GNU_BUILTIN
+		borrow = __builtin_sub_overflow(a[i], b[i] + borrow, &a[i]);
+#else
 		u64 d = (u64)a[i] - b[i] - borrow;
 		a[i] = static_cast<u32>(d);
 		borrow = d > a[i] ? 1 : 0; // borrow occurs if there is underflow
+#endif
 	}
 }
+
+inline void sub_ip(bul& a, const bul& b) {
+	u32 borrow = 0, i = BI_N * 2;
+	while (i-- > 0) {
+#ifdef GNU_BUILTIN
+		borrow = __builtin_sub_overflow(a[i], b[i] + borrow, &a[i]);
+#else
+		u64 d = (u64)a[i] - b[i] - borrow;
+		a[i] = static_cast<u32>(d);
+		borrow = d > a[i] ? 1 : 0; // borrow occurs if there is underflow
 #endif
+	}
+}
+
+// a -= b; // assume a > b
+inline void sub_n(const u32* a, const u32* b, u32* r, u32 size) {
+	u32 borrow = 0;
+	while (size-- > 0) {
+#ifdef GNU_BUILTIN
+		borrow = __builtin_sub_overflow(a[size], b[size] + borrow, &r[size]);
+#else
+		u64 d = (u64)a[size] - b[size] - borrow;
+		r[size] = (u32)d;
+		borrow = d > a[size] ? 1 : 0; // borrow occurs if there is underflow
+#endif
+	}
+}
 
 inline bui sub(bui a, const bui& b) {
 	sub_ip(a, b);
@@ -278,7 +327,7 @@ bui bui_from_dec(const std::string& s) {
 	for (; i < s.size(); ++i) {
 		char c = s[i];
 		if (c == '_' || is_space_c(c)) continue;
-		if (c < '0' || c > '9') break;  // Stop if non-digit is encountered
+		if (c < '0' || c > '9') break;
 		any_digit = true;
 		mul_ip(out, n10);
 		tmp[BI_N - 1] = c - '0';
@@ -288,53 +337,117 @@ bui bui_from_dec(const std::string& s) {
 	return out;
 }
 
-inline u32 highest_limb(bui &x) {
+inline u32 highest_limb(const bui &x) {
 	for (size_t i = 0; i < BI_N; ++i)
 		if (x[i] > 0) return BI_N - i - 1;
 	return 0;
 }
 
-inline void shift_left_limb(bul &x, u32 l) {
+inline void shift_limb_left(bul &x, u32 l) {
 	if (l == 0) return;
+	if (l >= BI_N * 2) {
+		std::fill(x.begin(), x.end(), 0);
+		return;
+	}
 	std::copy(x.begin() + l, x.end(), x.begin());
 	std::fill(x.end() - l, x.end(), 0);
 }
 
+ALWAYS_INLINE void split_bui(const bui &x, bui &high, bui &low, u32 size) {
+	std::copy_n(x.begin(), size, high.begin() + (BI_N - size));
+	std::copy(x.begin() + size, x.end(), low.begin() + size);
+}
 
 inline bul karatsuba(const bui &a, const bui &b, u32 size) {
-	bul result{}; // final double-sized result
+	bul r{};
+	if (size <= 16) return mul(a, b);
+	u32 half = size / 2;
 
-	if (size <= 2) return mul(a, b); // base case
+	bui a1{}, a0{}, b1{}, b0{};
+	split_bui(a, a1, a0, half);
+	split_bui(b, b1, b0, half);
 
-	u32 half = BI_N / 2;
+	bul z0 = karatsuba(a0, b0, half);
+	bul z2 = karatsuba(a1, b1, half);
 
-	// Split a and b into high and low halves
-	bui a_high{}, a_low{}, b_high{}, b_low{};
-	std::copy(a.begin(), a.begin() + half, a_high.begin() + (BI_N - half));
-	std::copy(a.begin() + half, a.end(), a_low.begin() + (BI_N - half));
-	std::copy(b.begin(), b.begin() + half, b_high.begin() + (BI_N - half));
-	std::copy(b.begin() + half, b.end(), b_low.begin() + (BI_N - half));
-
-	// Compute subproducts
-	bul z2 = karatsuba(a_high, b_high, half);
-	bul z0 = karatsuba(a_low, b_low, half);
-
-	bui a_sum = add(a_high, a_low);
-	bui b_sum = add(b_high, b_low);
+	bui a_sum = add(a1, a0);
+	bui b_sum = add(b1, b0);
 	bul z1 = karatsuba(a_sum, b_sum, half);
-	sub_ip(z1, bul_low(z2));
-	sub_ip(z1, bul_low(z0));
+	sub_ip(z1, z2);
+	sub_ip(z1, z0);
 
-	// Shift z2 and z1 accordingly
-	shift_left_limb(z2, 2 * half);
-	shift_left_limb(z1, half);
+	shift_limb_left(z2, 2 * half);
+	shift_limb_left(z1, half);
 
-	// Combine results
-	add_ip(result, z0);
-	add_ip(result, z1);
-	add_ip(result, z2);
-
-	return result;
+	add_ip(r, z0);
+	add_ip(r, z1);
+	add_ip(r, z2);
+	return r;
 }
+
+#include <vector>
+inline void mul_ip_n(const u32* a, const u32* b, u32* r, size_t n) {
+    std::fill_n(r, 2 * n, 0);
+	for (u32 i = n; i-- > 0;) {
+		u32 c = 0;
+		for (u32 j = n; j-- > 0;) {
+			u64 p = (u64)a[i] * b[j] + r[i + j + 1] + c;
+			r[i + j + 1] = (u32)p;
+			c = p >> 32;
+		}
+		r[i] += c;
+	}
+}
+
+constexpr size_t KARATSUBA_CUTOFF = 2;
+// constexpr size_t KARATSUBA_CUTOFF = 32; // tune this experimentally
+inline void karatsuba_be_rec(const u32* a, const u32* b, u32* r, u32 n, u32* scratch) {
+    if (n <= KARATSUBA_CUTOFF) {
+        mul_ip_n(a, b, r, n);
+        return;
+    }
+
+    u32 half = n / 2;
+    const u32* a1 = a;
+    const u32* a0 = a + half;
+    const u32* b1 = b;
+    const u32* b0 = b + half;
+
+    u32* z2 = r;       // high part
+    u32* z0 = r + n;   // low part
+    u32* z1 = scratch; // middle temp (2*half)
+
+    u32* tmp_a = z1 + 2 * half;
+    u32* tmp_b = tmp_a + half;
+    u32* tmp_scratch = tmp_b + half;
+
+    karatsuba_be_rec(a0, b0, z0, half, tmp_scratch); // z0 = a0 * b0
+    karatsuba_be_rec(a1, b1, z2, half, tmp_scratch); // z2 = a1 * b1
+
+	add_n(a1, a0, tmp_a, half); // tmp_a = a1 + a0
+	add_n(b1, b0, tmp_b, half); // tmp_b = b1 + b0
+    karatsuba_be_rec(tmp_a, tmp_b, z1, half, tmp_scratch); // z1 = (a1 + a0) * (b1 + b0)
+
+    // z1 = z1 - z2 - z0
+	sub_n(z1, z2, z1, 2 * half);
+	sub_n(z1, z0, z1, 2 * half);
+    // combine: r = z2 << (2*half*32) + z1 << (half*32) + z0
+	add_n(r + half, z1, r + half, 2 * half);
+}
+
+inline bul karatsuba_be_top(const bui& a, const bui& b) {
+    constexpr size_t n = BI_N;
+	// u32 n = std::max(highest_limb(a), highest_limb(b));
+    bul r{};
+    std::vector<u32> scratch(6 * n, 0);
+    karatsuba_be_rec(a.data(), b.data(), r.data(), n, scratch.data());
+    return r;
+}
+
+// for compatibility with your test code
+inline bul karatsu_test(const bui& a, const bui& b) {
+    return karatsuba_be_top(a, b);
+}
+
 
 #endif

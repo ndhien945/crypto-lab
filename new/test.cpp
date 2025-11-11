@@ -2,14 +2,15 @@
 #include <iomanip>
 #include <chrono>  // For benchmarking
 
-#define BI_N (1024 / 32)
+#define BI_N (16384 / 32)
+// false with N odd
 #include "bigint.h"
 
 int main() {
-	// bui a = bui_from_u32(17);
-	// bui b = bui_from_u32(42);
-	bui a = bui_from_dec("115792089237316195423570985008687907853269984665640564039457584007913129639936");
-	bui b = bui_from_dec("115792089237316195423570985008687907853269984665640564039457584007913129639936");
+	// bui a = bui_from_u32(2);
+	// bui b = bui_from_u32(3);
+	bui a = bui_from_dec("340282366920938463463374607461832982528");
+	bui b = bui_from_dec("340282366920938463463374607461832981000");
 
 	std::cout << "Initial Values:" << '\n';
 	std::cout << "a = " << bui_to_dec(a) << '\n';
@@ -23,28 +24,28 @@ int main() {
 	auto end = std::chrono::high_resolution_clock::now();
 	auto mul_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
 	bui low = bul_low(p);
-	std::cout << "\nAfter Multiplication (mul):" << '\n';
+	std::cout << "\nSchoolbook:" << '\n';
 	std::cout << "a * b = " << bui_to_dec(low) << '\n';
-	std::cout << "Time taken by mul: " << mul_duration.count() << " ns" << '\n';
+	std::cout << mul_duration.count() << " ns" << '\n';
 
 	// 2. Test Multiplication: mul_low(a, b);
-	start = std::chrono::high_resolution_clock::now();
-	bui p2 = mul_low(a, b);
-	end = std::chrono::high_resolution_clock::now();
-	mul_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-	std::cout << "\nAfter Multiplication (mul_low):" << '\n';
-	std::cout << "a * b = " << bui_to_dec(p2) << '\n';
-	std::cout << "Time taken by mul_low: " << mul_duration.count() << " ns" << '\n';
+	// start = std::chrono::high_resolution_clock::now();
+	// bui p2 = mul_low(a, b);
+	// end = std::chrono::high_resolution_clock::now();
+	// mul_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+	// std::cout << "\nAfter Multiplication (mul_low):" << '\n';
+	// std::cout << "a * b = " << bui_to_dec(p2) << '\n';
+	// std::cout << "Time taken by mul_low: " << mul_duration.count() << " ns" << '\n';
 
 	// 3. Test Multiplication: karatsuba(a, b, BI_N);
 	start = std::chrono::high_resolution_clock::now();
-	bul p3 = karatsuba_test(a, b);
+	bul p3 = karatsu_test(a, b);
 	end = std::chrono::high_resolution_clock::now();
-	std::chrono::duration<double> karatsuba_duration = end - start;
+	mul_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
 	low = bul_low(p3);
-	std::cout << "\nAfter Multiplication (karatsuba):" << '\n';
+	std::cout << "\nKaratsuba:" << '\n';
 	std::cout << "a * b = " << bui_to_dec(low) << '\n';
-	std::cout << "Time taken by karatsuba: " << karatsuba_duration.count() << " seconds" << '\n';
+	std::cout << mul_duration.count() << " ns" << '\n';
 
 	return 0;
 }
