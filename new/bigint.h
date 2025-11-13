@@ -30,7 +30,7 @@ typedef uint64_t u64;
 #endif
 
 // big endian: data[0] = MSW
-// bui a = 1 -> a = [0,0,...,1] -> a[BI_N]=1
+// bui a = 1 -> a = [0,0,...,1] -> a[BI_N - 1]=1
 struct bui : std::array<u32, BI_N> {};
 struct bul : std::array<u32, BI_N * 2> {};
 
@@ -167,6 +167,19 @@ inline int cmp(const bui &a, const bui &b) {
 	for (u32 i = 0; i < BI_N; ++i) {
 		if (a[i] != b[i])
 			return a[i] > b[i] ? 1 : -1;
+	}
+	return 0;
+}
+
+inline int cmp(const bul& a, const bui& b) {
+	for (int i = 0; i < BI_N; ++i) {
+		if (a[i] != 0) return 1;
+	}
+	for (int i = 0; i < BI_N; ++i) {
+		u32 a_low = a[BI_N + i];
+		u32 b_val = b[i];
+		if (a[i] != b[i])
+			return a_low > b_val ? 1 : -1;
 	}
 	return 0;
 }
@@ -365,7 +378,7 @@ bui shift_left(bui x, u32 amnt) {
 	return r;
 }
 
-ALWAYS_INLINE void shift_right_ip_imp(u32 *x, u32 n, u32 amnt) {
+ALWAYS_INLINE void shift_right_ip_imp(u32 *x, const u32 n, u32 amnt) {
 	if (amnt == 0) return;
 	const u32 limbs = amnt / SBU32;
 	if (limbs >= n) {
@@ -422,17 +435,17 @@ inline u32 highest_limb(const bul &x) {
 // https://skanthak.hier-im-netz.de/division.html
 inline void divmod_knuth(const bui& a, const bui& b, bui& quot, bui& rem) {
     assert(!bui_is0(b));
-	int cm = cmp(a, b);
-	if (cm < 0) {
-		quot = {};
-		rem = a;
-		return;
-	}
-	if (cm == 0) { // a == b
-		quot = bui1();
-		rem = {};
-		return;
-	}
+    int cm = cmp(a, b);
+    if (cm < 0) {
+       quot = {};
+       rem = a;
+       return;
+    }
+    if (cm == 0) { // a == b
+       quot = bui1();
+       rem = {};
+       return;
+    }
 
     // normalize
     bul r = bui_to_bul(a);
@@ -440,7 +453,8 @@ inline void divmod_knuth(const bui& a, const bui& b, bui& quot, bui& rem) {
     u32 d_lead_pow = highest_limb(b);
     u32 d_msw_idx = BI_N - 1 - d_lead_pow;
     u32 d0 = d[d_msw_idx];
-    const u32 norm_shift = d0 == 0 ? 0 : 32 - highest_bit(d0);
+    const u32 norm_shift = (d0 == 0) ? 0 : 32 - highest_bit(d0);
+
     if (norm_shift > 0) {
         shift_left_ip(d, norm_shift);
         shift_left_ip(r, norm_shift);
@@ -453,17 +467,52 @@ inline void divmod_knuth(const bui& a, const bui& b, bui& quot, bui& rem) {
     const u32 n = d_lead_pow + 1; // number of limbs in divisor
 
     // init
-    quot = bui0();
+    quot = {};
     u32 r_lead_pow = highest_limb(r); // use bul highest_limb
-    // m = (power of highest dividend limb) - (power of highest divisor limb)
     const int m = (int)r_lead_pow - (int)d_lead_pow;
+
+    // *Fix*: Handle n=1 (short division) by calling u32divmod
+    // Knuth's algorithm (with the d1 correction) requires n > 1.
+    // Your test case is n=1, which was breaking the logic.
+    if (n == 1) {
+        u32 r_denorm;
+        // We must divide the *full* normalized 'r' (bul), not just the low part
+        // Since u32divmod only takes a bui, we have to simulate it on the bul
+        bul q_bul = {}; // quotient (bul)
+        u32 r_temp = 0; // remainder (u32)
+        u32 d_val = d[BI_N-1]; // The single normalized divisor limb
+
+        for (int i = 0; i < BI_N * 2; ++i) {
+           u64 dividend = (u64)r_temp << 32 | r[i];
+           q_bul[i] = (u32)(dividend / d_val);
+           r_temp = (u32)(dividend % d_val);
+        }
+        // The quotient is in the low half of q_bul
+        std::copy(q_bul.begin() + BI_N, q_bul.end(), quot.begin());
+
+        // Denormalize the remainder
+        // The *un-normalized* remainder is r_temp >> norm_shift
+        // But we must also account for the bits from r that were shifted out
+        if (norm_shift > 0) {
+            shift_right_ip(r, norm_shift);
+            rem = bul_low(r);
+            // The last `norm_shift` bits of the original `a` are in `rem`
+            // and the `r_temp` from the division needs to be shifted back.
+            // This is tricky. Let's just re-calculate the remainder from scratch.
+            bui q_times_b = mul_low(quot, b);
+            rem = sub(a, q_times_b);
+        } else {
+            rem = bui_from_u32(r_temp);
+        }
+        return; // Exit after handling short division
+    }
 
     // j = Knuth's j (power of current quotient digit), from m down to 0
     for (int j = m; j >= 0; --j) {
         // calculate q_hat (guess)
-        // we need dividend limbs u_{j+n}, u_{j+n-1}, u_{j+n-2}
-        // u_{j+n} is at r_idx
-        u32 r_idx = BI_N * 2 - 1 - (j + n);
+        // *Fix*: This is the correct, non-sliding index for u_j
+        u32 r_idx = (BI_N * 2 - 1) - (j + n);
+
         u32 u_jn = r[r_idx];
         u32 u_jn1 = (r_idx + 1 < BI_N * 2) ? r[r_idx + 1] : 0;
         u32 u_jn2 = (r_idx + 2 < BI_N * 2) ? r[r_idx + 2] : 0;
@@ -471,9 +520,9 @@ inline void divmod_knuth(const bui& a, const bui& b, bui& quot, bui& rem) {
         u64 r_top = (u64)u_jn << SBU32 | u_jn1;
         u64 qhat, rhat;
 
-        if (u_jn == d0) {
+        if (u_jn >= d0) {
             qhat = 0xFFFFFFFFULL;
-            rhat = r_top + d0; // r_top - (b-1)*d0 = r_top + d0
+            rhat = ((u64)(u_jn - d0) << SBU32) + u_jn1 + d0;
         } else {
             qhat = r_top / d0;
             rhat = r_top % d0;
@@ -483,16 +532,18 @@ inline void divmod_knuth(const bui& a, const bui& b, bui& quot, bui& rem) {
         while (qhat >= (1ULL << 32) || (n > 1 && qhat * d1 > (rhat << 32) + u_jn2)) {
             qhat--;
             rhat += d0;
-            if (rhat >= (1ULL << 32)) break; // rhat > base, so qhat is correct
+            if (rhat >= (1ULL << 32)) break;
         }
 
         // multiply and subtract (r -= qhat * d * b^j)
         u64 borrow = 0;
-        u32 r_lsw_idx = (BI_N * 2 - 1) - j; // LSW of window
-        u32 d_lsw_idx = BI_N - 1; // LSW of d
-        for (u32 i = 0; i < n; ++i) { // Loop 'n' (divisor) limbs
-            u32 r_i = r_lsw_idx - i;
+        u32 d_lsw_idx = BI_N - 1;
+
+        // *Fix*: The window to subtract from starts at r_idx
+        for (u32 i = 0; i < n; ++i) {
+            u32 r_i = r_idx + n - i; // LSW of window is r_idx + n
             u32 d_i = d_lsw_idx - i;
+            // No OOB check needed now, r_idx is static for the j-loop
 
             u64 prod = qhat * d[d_i];
             u64 diff = (u64)r[r_i] - (prod & 0xFFFFFFFF) - borrow;
@@ -504,16 +555,23 @@ inline void divmod_knuth(const bui& a, const bui& b, bui& quot, bui& rem) {
         r[r_idx] = (u32)final_diff;
 
         // store quotient digit
-        u32 q_idx = BI_N - 1 - j;
-        if (q_idx < BI_N) quot[q_idx] = (u32)qhat;
+        if (j < BI_N) {
+            u32 q_idx = BI_N - 1 - j;
+            quot[q_idx] = (u32)qhat;
+        }
 
         // add back (if guess was too high)
-        if (final_diff >> 32 & 1) { // if still have borrow
-            if (q_idx < BI_N) --quot[q_idx]; // correct quotient
+        if (final_diff >> 32 & 1) {
+            if (j < BI_N) {
+                u32 q_idx = BI_N - 1 - j;
+                --quot[q_idx];
+            }
+
             u64 carry = 0;
-            for (u32 i = 0; i < n; ++i) { // Loop 'n' (divisor) limbs
-                u32 r_i = r_lsw_idx - i;
+            for (u32 i = 0; i < n; ++i) {
+                u32 r_i = r_idx + n - i;
                 u32 d_i = d_lsw_idx - i;
+
                 u64 sum = (u64)r[r_i] + d[d_i] + carry;
                 r[r_i] = (u32)sum;
                 carry = sum >> 32;
@@ -798,7 +856,6 @@ inline u32 next_pow2(u32 x) {
 	x++;
 	return x;
 }
-
 
 inline bul karatsuba_be_top(const bui& a, const bui& b) {
     constexpr size_t n = BI_N;
