@@ -281,7 +281,7 @@ inline bui mul_low(const bui& a, const bui& b) {
 /* bitwise restoring long division
  * q,r can be NULL independent
  */
-void divmod_ref(const bui &a, const bui &b, bui *q, bui *r) {
+void divmod_naive(const bui &a, const bui &b, bui *q, bui *r) {
 	assert(!bui_is0(b));
 	int cm = cmp(a, b);
 	if (cm < 0) {
@@ -313,138 +313,6 @@ void divmod_ref(const bui &a, const bui &b, bui *q, bui *r) {
 	if (r) *r = rem;
 }
 
-ALWAYS_INLINE void divmod_fast(const bui &a, const bui &b, bui *q, bui *r) {
-	assert(!bui_is0(b));
-
-	int cm = cmp(a, b);
-	if (cm < 0) {
-		if (q) *q = {};
-		if (r) *r = a;
-		return;
-	}
-	if (cm == 0) {
-		if (q) *q = bui1();
-		if (r) *r = {};
-		return;
-	}
-
-	bui rem{};
-	bui quotient{};
-
-	const u32 a_bits = highest_bit(a);
-	const u32 b_bits = highest_bit(b);
-	const u32 shift = a_bits - b_bits;
-
-	// fast path: normalize divisor
-	bui divisor = b;
-	if (shift > 0) {
-		for (int i = 0; i < shift; ++i) dbl_ip(divisor);
-	}
-
-	for (u32 i = shift + 1; i-- > 0;) {
-		// rem <<= 1; rem[0] += current bit from a
-		u32 c = get_bit(a, i + b_bits - 1);
-		u32 carry = c;
-		for (u32 j = BI_N; j-- > 0;) {
-			u32 v = rem[j];
-			rem[j] = (v << 1) | carry;
-			carry = v >> 31;
-		}
-		if (cmp(rem, divisor) >= 0) {
-			sub_ip(rem, divisor);
-			set_bit_ip(quotient, i + b_bits - 1, 1);
-		}
-		// shift divisor right by 1 (divide by 2)
-		for (int j = 0; j < BI_N; ++j) {
-			u32 v = divisor[j];
-			u32 next = (j + 1 < BI_N) ? divisor[j + 1] : 0;
-			divisor[j] = (v >> 1) | (next << 31);
-		}
-	}
-
-	if (q) *q = quotient;
-	if (r) *r = rem;
-}
-
-// Binary long division using limb-by-limb (Knuth's Algorithm D)
-// Operates on 32-bit limbs, O(n*m) where n = limbs in dividend, m = limbs in divisor
-inline void divmod_limb_bruh(const bui& num, const bui& den, bui& quot, bui& rem) {
-    assert(!bui_is0(den));
-    quot = bui0();
-    rem = num;
-
-    if (cmp(num, den) < 0) return;
-
-    // Find leading limb of divisor
-    u32 d_lead_limb = highest_limb(den);
-    u32 d_lead = den[d_lead_limb];
-    u32 n_lead_limb = highest_limb(num);
-
-    // Normalize: make divisor's leading bit >= 16 (helps estimation)
-    u32 shift = 32 - highest_bit(d_lead);
-    bui d = den;
-    bui r = num;
-    if (shift > 0) {
-        for (u32 i = 0; i < BI_N; ++i) {
-            u64 v = (u64)d[i] << shift;
-            if (i > 0) v |= d[i-1] >> (32 - shift);
-            d[i] = (u32)v;
-        }
-        for (u32 i = 0; i < BI_N; ++i) {
-            u64 v = (u64)r[i] << shift;
-            if (i > 0) v |= r[i-1] >> (32 - shift);
-            r[i] = (u32)v;
-        }
-    }
-    u32 d0 = d[d_lead_limb];  // normalized leading limb
-
-    // Main loop: process each limb of dividend from MSB
-    for (int j = (int)n_lead_limb - (int)d_lead_limb; j >= 0; --j) {
-        u32 idx = d_lead_limb + j;
-
-        // Estimate quotient digit: qhat = floor( (r[idx]*2^32 + r[idx-1]) / d0 )
-        u64 r_high = (u64)r[idx] << 32 | (idx > 0 ? r[idx-1] : 0);
-        u64 qhat = r_high / d0;
-        if (qhat >= (1ULL << 32)) qhat = (1ULL << 32) - 1;
-
-        // Multiply and subtract: r -= qhat * d (shifted by j limbs)
-        u64 borrow = 0;
-        for (u32 k = 0; k < BI_N; ++k) {
-            u32 d_val = (k <= d_lead_limb + j) ? d[k - j] : 0;
-            u64 prod = (u64)qhat * d_val + borrow;
-            u64 diff = (u64)r[k] - (u32)prod;
-            r[k] = (u32)diff;
-            borrow = (prod >> 32) + (diff >> 32);
-        }
-        // Add back if borrow occurred (qhat was too large)
-        if (borrow) {
-            qhat--;
-            u32 carry = 0;
-            for (u32 k = j; k < BI_N; ++k) {
-                u64 sum = (u64)r[k] + (k - j < BI_N ? d[k - j] : 0) + carry;
-                r[k] = (u32)sum;
-                carry = sum >> 32;
-            }
-        }
-
-        // Store quotient digit
-        if (j + d_lead_limb < BI_N)
-            quot[j + d_lead_limb] = (u32)qhat;
-    }
-
-    // Denormalize remainder
-    if (shift > 0) {
-        u32 carry = 0;
-        for (u32 i = BI_N; i-- > 0;) {
-            u32 v = r[i] >> shift | carry;
-            carry = r[i] << (32 - shift);
-            rem[i] = v;
-        }
-    } else {
-        rem = r;
-    }
-}
-
 ALWAYS_INLINE void shift_left_ip_imp(u32 *x, u32 n, u32 amnt) {
 	if (amnt == 0) return;
 	const u32 limbs = amnt / SBU32;
@@ -470,27 +338,14 @@ ALWAYS_INLINE void shift_left_ip_imp(u32 *x, u32 n, u32 amnt) {
 }
 
 inline void shift_left_ip(bui &x, u32 amnt) {
-	if (amnt == 0) return;
-	const u32 limbs = amnt / SBU32;
-	if (limbs >= BI_N) { x.fill(0); return; }
-	const u32 bits = amnt % 32;
-	// limb-only move (toward MSW)
-	if (limbs) {
-		std::copy_backward(x.begin() + limbs, x.end(), x.begin() + BI_N - limbs);
-		std::fill(x.end() - limbs, x.end(), 0);
-	}
-	// intra-word stitch (only if bits != 0)
-	if (bits) {
-		u32 c = 0, i = BI_N;
-		while (i-- > 0) {
-			u32 tmp = x[i];
-			x[i] = tmp << bits | c;
-			c = tmp >> (32 - bits);
-		}
-	}
+	shift_left_ip_imp(x.data(), BI_N, amnt);
 }
 
-bui shift_left(const bui &x, u32 amnt) {
+inline void shift_left_ip(bul &x, u32 amnt) {
+	shift_left_ip_imp(x.data(), BI_N * 2, amnt);
+}
+
+bui shift_left(bui x, u32 amnt) {
 	if (amnt == 0) return x;
 	u32 limbs = amnt / SBU32;
 	if (limbs >= BI_N) return {};
@@ -534,28 +389,12 @@ ALWAYS_INLINE void shift_right_ip_imp(u32 *x, u32 n, u32 amnt) {
 	}
 }
 
-/* -------------------------------------------------------------
-   Big-endian in-place right shift (bits) on a bui
-   ------------------------------------------------------------- */
 inline void shift_right_ip(bui& x, const u32 amnt) {
-	if (amnt == 0) return;
-	if (amnt >= BI_BIT) {
-		x.fill(0);
-		return;
-	}
-	u32 limbs = amnt / SBU32, bits = amnt % 32;
-	if (limbs) {
-		std::copy_backward(x.begin(), x.end() - limbs, x.end());
-		std::fill_n(x.begin(), limbs, 0);
-	}
-	if (bits) {
-		u32 c = 0;
-		for (u32 i = BI_N; i-- > 0;) {
-			u32 v = x[i];
-			x[i] = x[i] >> bits | c;
-			c = v >> (32 - bits);
-		}
-	}
+	shift_right_ip_imp(x.data(), BI_N, amnt);
+}
+
+inline void shift_right_ip(bul& x, u32 amnt) {
+	shift_right_ip_imp(x.data(), BI_N * 2, amnt);
 }
 
 inline void u32divmod(const bui& a, u32 b, bui& q, u32& r) {
@@ -568,40 +407,7 @@ inline void u32divmod(const bui& a, u32 b, bui& q, u32& r) {
 	}
 }
 
-// Big-endian in-place left shift (bits) on a bul
-inline void shift_left_ip(bul &x, u32 amnt) {
-	shift_left_ip_imp(x.data(), BI_N * 2, amnt);
-}
-
-// Big-endian in-place right shift (bits) on a bul
-inline void shift_right_ip(bul& x, u32 amnt) {
-	shift_right_ip_imp(x.data(), BI_N * 2, amnt);
-	if (amnt == 0) return;
-	if (amnt >= 32 * BI_N * 2) {
-		x.fill(0);
-		return;
-	}
-
-	u32 limbs = amnt / 32;
-	u32 bits = amnt % 32;
-
-	if (limbs) {
-		std::copy_backward(x.begin(), x.end() - limbs, x.end());
-		std::fill_n(x.begin(), limbs, 0);
-	}
-	if (bits) {
-		u32 c = 0;
-		for (u32 i = 0; i < BI_N * 2; ++i) { // Must go MSW -> LSW
-			u32 tmp = x[i];
-			x[i] = tmp >> bits | c;
-			c = tmp << (32 - bits);
-		}
-	}
-}
-
-/* -------------------------------------------------------------
-   Find highest (MSB) limb power for a bul
-   ------------------------------------------------------------- */
+// Find highest (MSB) limb power for a bul
 inline u32 highest_limb(const bul &x) {
 	for (size_t i = 0; i < BI_N * 2; ++i) {
 		if (x[i] > 0)
@@ -723,16 +529,13 @@ inline void divmod_knuth(const bui& a, const bui& b, bui& quot, bui& rem) {
     rem = bul_low(r); // copy low half of 'r' into 'rem'
 }
 
-// ------------------------------------------------------------
-//  Convenience wrappers (big-endian safe)
-// ------------------------------------------------------------
-inline bui div_knuth(const bui& a, const bui& b) {
+inline bui div(const bui& a, const bui& b) {
     bui q, r;
     divmod_knuth(a, b, q, r);
     return q;
 }
 
-inline bui mod_knuth(const bui& a, const bui& b) {
+inline bui mod(const bui& a, const bui& b) {
     bui q, r;
     divmod_knuth(a, b, q, r);
     return r;
