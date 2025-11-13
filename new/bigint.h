@@ -307,41 +307,6 @@ inline bui mul_low(const bui& a, const bui& b) {
 	return bul_low(r);
 }
 
-/* bitwise restoring long division
- * q,r can be NULL independent
- */
-void divmod_naive(const bui &a, const bui &b, bui *q, bui *r) {
-	assert(!bui_is0(b));
-	int cm = cmp(a, b);
-	if (cm < 0) {
-		if (q) *q = {};
-		if (r) *r = a;
-		return;
-	}
-	if (cm == 0) {
-		if (q) *q = bui1();
-		if (r) *r = {};
-		return;
-	}
-	bui quotient{};
-	bui rem{};
-	u32 n = highest_bit(a);
-	while (n-- > 0) {
-		u32 c = get_bit(a, n), i = BI_N;
-		while (i-- > 0) {
-			u32 v = rem[i];
-			rem[i] = v << 1 | c;
-			c = v >> 31;
-		}
-		if (cmp(rem, b) >= 0) {
-			sub_ip(rem, b);
-			quotient = set_bit(quotient, n, 1u);
-		}
-	}
-	if (q) *q = quotient;
-	if (r) *r = rem;
-}
-
 ALWAYS_INLINE void shift_left_ip_imp(u32 *x, u32 n, u32 amnt) {
 	if (amnt == 0) return;
 	const u32 limbs = amnt / SBU32;
@@ -409,11 +374,12 @@ ALWAYS_INLINE void shift_right_ip_imp(u32 *x, const u32 n, u32 amnt) {
 	}
 	// intra-word stitch (only if bits != 0)
 	if (bits) {
-		u32 c = 0, i = n;
-		while (i-- > 0) {
+		u32 carry = 0;
+		for (u32 i = 0; i < n; ++i) {
 			u32 v = x[i];
-			x[i] = x[i] >> bits | c;
-			c = v >> (32 - bits);
+			u32 new_val = v >> bits | carry;
+			carry = v << (SBU32 - bits);
+			x[i] = new_val;
 		}
 	}
 }
@@ -449,171 +415,159 @@ inline u32 highest_limb(const bul &x) {
 // Donald E. Knuth, The Art of Computer Programming, Volume 2: Seminumerical Algorithms
 // Section: 4.3.1, Algorithm D (Division of large integers).
 // https://skanthak.hier-im-netz.de/division.html
-inline void divmod_knuth(const bui& a, const bui& b, bui& quot, bui& rem) {
-    assert(!bui_is0(b));
-    int cm = cmp(a, b);
-    if (cm < 0) {
-       quot = {};
-       rem = a;
-       return;
-    }
-    if (cm == 0) { // a == b
-       quot = bui1();
-       rem = {};
-       return;
-    }
-
-    // normalize
-    bul r = bui_to_bul(a);
-    bui d = b;
-    u32 d_lead_pow = highest_limb(b);
-    u32 d_msw_idx = BI_N - 1 - d_lead_pow;
-    u32 d0 = d[d_msw_idx];
-    const u32 norm_shift = (d0 == 0) ? 0 : 32 - highest_bit(d0);
-
-    if (norm_shift > 0) {
-        shift_left_ip(d, norm_shift);
-        shift_left_ip(r, norm_shift);
-    }
-    // recalculate divisor info after normalization
-    d_lead_pow = highest_limb(d);
-    d_msw_idx = BI_N - 1 - d_lead_pow;
-    d0 = d[d_msw_idx];
-    const u32 d1 = (d_msw_idx + 1 < BI_N) ? d[d_msw_idx + 1] : 0;
-    const u32 n = d_lead_pow + 1; // number of limbs in divisor
-
-    // init
-    quot = {};
-    u32 r_lead_pow = highest_limb(r); // use bul highest_limb
-    const int m = (int)r_lead_pow - (int)d_lead_pow;
-
-    // *Fix*: Handle n=1 (short division) by calling u32divmod
-    // Knuth's algorithm (with the d1 correction) requires n > 1.
-    // Your test case is n=1, which was breaking the logic.
-    if (n == 1) {
-        u32 r_denorm;
-        // We must divide the *full* normalized 'r' (bul), not just the low part
-        // Since u32divmod only takes a bui, we have to simulate it on the bul
-        bul q_bul = {}; // quotient (bul)
-        u32 r_temp = 0; // remainder (u32)
-        u32 d_val = d[BI_N-1]; // The single normalized divisor limb
-
-        for (int i = 0; i < BI_N * 2; ++i) {
-           u64 dividend = (u64)r_temp << 32 | r[i];
-           q_bul[i] = (u32)(dividend / d_val);
-           r_temp = (u32)(dividend % d_val);
-        }
-        // The quotient is in the low half of q_bul
-        std::copy(q_bul.begin() + BI_N, q_bul.end(), quot.begin());
-
-        // Denormalize the remainder
-        // The *un-normalized* remainder is r_temp >> norm_shift
-        // But we must also account for the bits from r that were shifted out
-        if (norm_shift > 0) {
-            shift_right_ip(r, norm_shift);
-            rem = bul_low(r);
-            // The last `norm_shift` bits of the original `a` are in `rem`
-            // and the `r_temp` from the division needs to be shifted back.
-            // This is tricky. Let's just re-calculate the remainder from scratch.
-            bui q_times_b = mul_low(quot, b);
-            rem = sub(a, q_times_b);
-        } else {
-            rem = bui_from_u32(r_temp);
-        }
-        return; // Exit after handling short division
-    }
-
-    // j = Knuth's j (power of current quotient digit), from m down to 0
-    for (int j = m; j >= 0; --j) {
-        // calculate q_hat (guess)
-        // *Fix*: This is the correct, non-sliding index for u_j
-        u32 r_idx = (BI_N * 2 - 1) - (j + n);
-
-        u32 u_jn = r[r_idx];
-        u32 u_jn1 = (r_idx + 1 < BI_N * 2) ? r[r_idx + 1] : 0;
-        u32 u_jn2 = (r_idx + 2 < BI_N * 2) ? r[r_idx + 2] : 0;
-
-        u64 r_top = (u64)u_jn << SBU32 | u_jn1;
-        u64 qhat, rhat;
-
-        if (u_jn >= d0) {
-            qhat = 0xFFFFFFFFULL;
-            rhat = ((u64)(u_jn - d0) << SBU32) + u_jn1 + d0;
-        } else {
-            qhat = r_top / d0;
-            rhat = r_top % d0;
-        }
-
-        // knuth's correction step
-        while (qhat >= (1ULL << 32) || (n > 1 && qhat * d1 > (rhat << 32) + u_jn2)) {
-            qhat--;
-            rhat += d0;
-            if (rhat >= (1ULL << 32)) break;
-        }
-
-        // multiply and subtract (r -= qhat * d * b^j)
-        u64 borrow = 0;
-        u32 d_lsw_idx = BI_N - 1;
-
-        // *Fix*: The window to subtract from starts at r_idx
-        for (u32 i = 0; i < n; ++i) {
-            u32 r_i = r_idx + n - i; // LSW of window is r_idx + n
-            u32 d_i = d_lsw_idx - i;
-            // No OOB check needed now, r_idx is static for the j-loop
-
-            u64 prod = qhat * d[d_i];
-            u64 diff = (u64)r[r_i] - (prod & 0xFFFFFFFF) - borrow;
-            r[r_i] = (u32)diff;
-            borrow = (prod >> 32) - (diff >> 32);
-        }
-
-        u64 final_diff = (u64)r[r_idx] - borrow;
-        r[r_idx] = (u32)final_diff;
-
-        // store quotient digit
-        if (j < BI_N) {
-            u32 q_idx = BI_N - 1 - j;
-            quot[q_idx] = (u32)qhat;
-        }
-
-        // add back (if guess was too high)
-        if (final_diff >> 32 & 1) {
-            if (j < BI_N) {
-                u32 q_idx = BI_N - 1 - j;
-                --quot[q_idx];
-            }
-
-            u64 carry = 0;
-            for (u32 i = 0; i < n; ++i) {
-                u32 r_i = r_idx + n - i;
-                u32 d_i = d_lsw_idx - i;
-
-                u64 sum = (u64)r[r_i] + d[d_i] + carry;
-                r[r_i] = (u32)sum;
-                carry = sum >> 32;
-            }
-            r[r_idx] = (u32)((u64)r[r_idx] + carry);
-        }
-    }
-
-    // denormalize, remainder is in the low half of 'r'
-    if (norm_shift > 0) {
-        shift_right_ip(r, norm_shift);
-    }
-    rem = bul_low(r); // copy low half of 'r' into 'rem'
-}
-
-inline bui div(const bui& a, const bui& b) {
-    bui q, r;
-    divmod_knuth(a, b, q, r);
-    return q;
-}
-
-inline bui mod(const bui& a, const bui& b) {
-    bui q, r;
-    divmod_knuth(a, b, q, r);
-    return r;
-}
+// inline void divmod_knuth(const bui& a, const bui& b, bui& quot, bui& rem) {
+//     assert(!bui_is0(b));
+//     int cm = cmp(a, b);
+//     if (cm < 0) {
+//        quot = {};
+//        rem = a;
+//        return;
+//     }
+//     if (cm == 0) { // a == b
+//        quot = bui1();
+//        rem = {};
+//        return;
+//     }
+//
+//     // normalize
+//     bul r = bui_to_bul(a);
+//     bui d = b;
+//     u32 d_lead_pow = highest_limb(b);
+//     u32 d_msw_idx = BI_N - 1 - d_lead_pow;
+//     u32 d0 = d[d_msw_idx];
+//     const u32 norm_shift = (d0 == 0) ? 0 : 32 - highest_bit(d0);
+//
+//     if (norm_shift > 0) {
+//         shift_left_ip(d, norm_shift);
+//         shift_left_ip(r, norm_shift);
+//     }
+//     // recalculate divisor info after normalization
+//     d_lead_pow = highest_limb(d);
+//     d_msw_idx = BI_N - 1 - d_lead_pow;
+//     d0 = d[d_msw_idx];
+//     const u32 d1 = (d_msw_idx + 1 < BI_N) ? d[d_msw_idx + 1] : 0;
+//     const u32 n = d_lead_pow + 1; // number of limbs in divisor
+//
+//     // init
+//     quot = {};
+//     u32 r_lead_pow = highest_limb(r); // use bul highest_limb
+//     const int m = (int)r_lead_pow - (int)d_lead_pow;
+//
+//     // *Fix*: Handle n=1 (short division) by calling u32divmod
+//     // Knuth's algorithm (with the d1 correction) requires n > 1.
+//     // Your test case is n=1, which was breaking the logic.
+//     if (n == 1) {
+//         u32 r_denorm;
+//         // We must divide the *full* normalized 'r' (bul), not just the low part
+//         // Since u32divmod only takes a bui, we have to simulate it on the bul
+//         bul q_bul = {}; // quotient (bul)
+//         u32 r_temp = 0; // remainder (u32)
+//         u32 d_val = d[BI_N-1]; // The single normalized divisor limb
+//
+//         for (int i = 0; i < BI_N * 2; ++i) {
+//            u64 dividend = (u64)r_temp << 32 | r[i];
+//            q_bul[i] = (u32)(dividend / d_val);
+//            r_temp = (u32)(dividend % d_val);
+//         }
+//         // The quotient is in the low half of q_bul
+//         std::copy(q_bul.begin() + BI_N, q_bul.end(), quot.begin());
+//
+//         // Denormalize the remainder
+//         // The *un-normalized* remainder is r_temp >> norm_shift
+//         // But we must also account for the bits from r that were shifted out
+//         if (norm_shift > 0) {
+//             shift_right_ip(r, norm_shift);
+//             rem = bul_low(r);
+//             // The last `norm_shift` bits of the original `a` are in `rem`
+//             // and the `r_temp` from the division needs to be shifted back.
+//             // This is tricky. Let's just re-calculate the remainder from scratch.
+//             bui q_times_b = mul_low(quot, b);
+//             rem = sub(a, q_times_b);
+//         } else {
+//             rem = bui_from_u32(r_temp);
+//         }
+//         return; // Exit after handling short division
+//     }
+//
+//     // j = Knuth's j (power of current quotient digit), from m down to 0
+//     for (int j = m; j >= 0; --j) {
+//         // calculate q_hat (guess)
+//         // *Fix*: This is the correct, non-sliding index for u_j
+//         u32 r_idx = (BI_N * 2 - 1) - (j + n);
+//
+//         u32 u_jn = r[r_idx];
+//         u32 u_jn1 = (r_idx + 1 < BI_N * 2) ? r[r_idx + 1] : 0;
+//         u32 u_jn2 = (r_idx + 2 < BI_N * 2) ? r[r_idx + 2] : 0;
+//
+//         u64 r_top = (u64)u_jn << SBU32 | u_jn1;
+//         u64 qhat, rhat;
+//
+//         if (u_jn >= d0) {
+//             qhat = 0xFFFFFFFFULL;
+//             rhat = ((u64)(u_jn - d0) << SBU32) + u_jn1 + d0;
+//         } else {
+//             qhat = r_top / d0;
+//             rhat = r_top % d0;
+//         }
+//
+//         // knuth's correction step
+//         while (qhat >= (1ULL << 32) || (n > 1 && qhat * d1 > (rhat << 32) + u_jn2)) {
+//             qhat--;
+//             rhat += d0;
+//             if (rhat >= (1ULL << 32)) break;
+//         }
+//
+//         // multiply and subtract (r -= qhat * d * b^j)
+//         u64 borrow = 0;
+//         u32 d_lsw_idx = BI_N - 1;
+//
+//         // *Fix*: The window to subtract from starts at r_idx
+//         for (u32 i = 0; i < n; ++i) {
+//             u32 r_i = r_idx + n - i; // LSW of window is r_idx + n
+//             u32 d_i = d_lsw_idx - i;
+//             // No OOB check needed now, r_idx is static for the j-loop
+//
+//             u64 prod = qhat * d[d_i];
+//             u64 diff = (u64)r[r_i] - (prod & 0xFFFFFFFF) - borrow;
+//             r[r_i] = (u32)diff;
+//             borrow = (prod >> 32) - (diff >> 32);
+//         }
+//
+//         u64 final_diff = (u64)r[r_idx] - borrow;
+//         r[r_idx] = (u32)final_diff;
+//
+//         // store quotient digit
+//         if (j < BI_N) {
+//             u32 q_idx = BI_N - 1 - j;
+//             quot[q_idx] = (u32)qhat;
+//         }
+//
+//         // add back (if guess was too high)
+//         if (final_diff >> 32 & 1) {
+//             if (j < BI_N) {
+//                 u32 q_idx = BI_N - 1 - j;
+//                 --quot[q_idx];
+//             }
+//
+//             u64 carry = 0;
+//             for (u32 i = 0; i < n; ++i) {
+//                 u32 r_i = r_idx + n - i;
+//                 u32 d_i = d_lsw_idx - i;
+//
+//                 u64 sum = (u64)r[r_i] + d[d_i] + carry;
+//                 r[r_i] = (u32)sum;
+//                 carry = sum >> 32;
+//             }
+//             r[r_idx] = (u32)((u64)r[r_idx] + carry);
+//         }
+//     }
+//
+//     // denormalize, remainder is in the low half of 'r'
+//     if (norm_shift > 0) {
+//         shift_right_ip(r, norm_shift);
+//     }
+//     rem = bul_low(r); // copy low half of 'r' into 'rem'
+// }
 
 inline bool is_space_c(char c) {
 	return c == ' ' || c == '\t';
@@ -724,169 +678,169 @@ bui bui_from_hex(const std::string& s) {
 	return out;
 }
 
-ALWAYS_INLINE void split_bui(const bui &x, bui &high, bui &low, u32 n) {
-	std::copy_n(x.begin(), n, high.begin() + (BI_N - n));
-	std::copy(x.begin() + n, x.end(), low.begin() + n);
-}
-
-inline bul karatsuba(const bui &a, const bui &b, const u32 n) {
-	bul r{};
-	if (n <= 16) return mul(a, b);
-	u32 half = n / 2;
-
-	bui a1{}, a0{}, b1{}, b0{};
-	split_bui(a, a1, a0, half);
-	split_bui(b, b1, b0, half);
-
-	bul z2 = karatsuba(a1, b1, half);
-	bul z0 = karatsuba(a0, b0, half);
-
-	bui a_sum = add(a1, a0);
-	bui b_sum = add(b1, b0);
-	bul z1 = karatsuba(a_sum, b_sum, half);
-	sub_ip(z1, z2);
-	sub_ip(z1, z0);
-
-	shift_limb_left(z2, 2 * half);
-	shift_limb_left(z1, half);
-
-	add_ip(r, z0);
-	add_ip(r, z1);
-	add_ip(r, z2);
-	return r;
-}
-
-constexpr size_t KARATSUBA_CUTOFF = 2;
-// constexpr size_t KARATSUBA_CUTOFF = 4;
-// constexpr size_t KARATSUBA_CUTOFF = 8;
-// constexpr size_t KARATSUBA_CUTOFF = 16;
-// constexpr size_t KARATSUBA_CUTOFF = 32; // tune this experimentally
-inline void karatsuba_be_rec_old(const u32* a, const u32* b, u32* r, const u32 n, u32* scratch) {
-    if (n <= KARATSUBA_CUTOFF) {
-        mul_imp(a, b, r, n);
-        return;
-    }
-
-    u32 half = n / 2;
-    const u32* a1 = a;
-    const u32* a0 = a + half;
-    const u32* b1 = b;
-    const u32* b0 = b + half;
-
-    u32* z2 = r;       // high part
-    u32* z0 = r + n;   // low part
-    u32* z1 = scratch; // middle temp (2*half)
-
-	const u32 maxlen = std::max(half, half);
-
-    u32* tmp_a = z1 + 2 * maxlen;
-    u32* tmp_b = tmp_a + maxlen;
-    u32* tmp_scratch = tmp_b + maxlen;
-
-    karatsuba_be_rec_old(a0, b0, z0, half, tmp_scratch); // z0 = a0 * b0
-    karatsuba_be_rec_old(a1, b1, z2, half, tmp_scratch); // z2 = a1 * b1
-
-	add_n(a1, a0, tmp_a, half); // tmp_a = a1 + a0
-	add_n(b1, b0, tmp_b, half); // tmp_b = b1 + b0
-    karatsuba_be_rec_old(tmp_a, tmp_b, z1, half, tmp_scratch); // z1 = (a1 + a0) * (b1 + b0)
-
-    // z1 = z1 - z2 - z0
-	sub_n(z1, z2, z1, 2 * half);
-	sub_n(z1, z0, z1, 2 * half);
-    // combine: r = z2 << (2*half*32) + z1 << (half*32) + z0
-	add_n(r + half, z1, r + half, 2 * half);
-}
-
-inline void karatsuba_be_rec(const u32* a, const u32* b, u32* r, u32 n, u32* scratch) {
-	if (bu_is0(a, n) || bu_is0(b, n)) {
-		std::fill_n(r, 2 * n, 0);
-		return;
-	}
-	if (n <= KARATSUBA_CUTOFF) {
-		mul_imp(a, b, r, n);
-		return;
-	}
-
-	const u32 half  = n / 2;
-	const u32 other = n - half;       // may be half+1 if n is odd
-
-	// Big-endian split
-	const u32* a1 = a;           // high half
-	const u32* a0 = a + half;    // low  half
-	const u32* b1 = b;
-	const u32* b0 = b + half;
-
-	// workspace layout
-	u32* z0 = scratch;                 // size 2*other
-	u32* z1 = z0 + 2 * other;          // size 2*other
-	u32* z2 = z1 + 2 * other;          // size 2*half
-	u32* tmpa = z2 + 2 * half;
-	u32* tmpb = tmpa + other;
-	u32* subscratch = tmpb + other;
-
-	// z0 = a0 * b0
-	karatsuba_be_rec(a0, b0, z0, other, subscratch);
-
-	// z2 = a1 * b1
-	karatsuba_be_rec(a1, b1, z2, half, subscratch);
-
-	// tmpa = a0 + a1 (aligned to low indices)
-	std::fill_n(tmpa, other, 0);
-	std::fill_n(tmpb, other, 0);
-	std::copy(a0 + (other - half), a0 + other, tmpa + (other - half));
-	for (u32 i = 0; i < half; ++i)
-		tmpa[i] += a1[i];
-	std::copy(b0 + (other - half), b0 + other, tmpb + (other - half));
-	for (u32 i = 0; i < half; ++i)
-		tmpb[i] += b1[i];
-
-	// z1 = (a0+a1)*(b0+b1)
-	karatsuba_be_rec(tmpa, tmpb, z1, other, subscratch);
-
-	// z1 = z1 - z2 - z0
-	sub_n(z1 + (2 * other - 2 * half), z2, z1 + (2 * other - 2 * half), 2 * half);
-	sub_n(z1, z0, z1, 2 * other);
-
-	// clear result
-	std::fill_n(r, 2 * n, 0);
-
-	// combine (big-endian)
-	// copy z0 → low end
-	std::copy(z0 + 2 * other - n, z0 + 2 * other, r + 2 * n - 2 * other);
-
-	// add z1 shifted by (other limbs)
-	add_n(r + (n - other), z1 + 2 * other - n, r + (n - other), 2 * other);
-
-	// add z2 shifted by (2*other limbs)
-	add_n(r, z2 + 2 * half - n, r, 2 * half);
-}
-
-inline u32 next_pow2(u32 x) {
-	if (x == 0) return 1;
-	x--;
-	x |= x >> 1;
-	x |= x >> 2;
-	x |= x >> 4;
-	x |= x >> 8;
-	x |= x >> 16;
-	x++;
-	return x;
-}
-
-inline bul karatsuba_be_top(const bui& a, const bui& b) {
-    constexpr size_t n = BI_N;
-	// u32 n = std::max(highest_limb(a), highest_limb(b));
-	// n = next_pow2(n) * 2;
-    bul r{};
-    std::array<u32, 6 * BI_N> scratch{};
-    // std::array<u32, 8 * BI_N> scratch{};
-    karatsuba_be_rec_old(a.data(), b.data(), r.data(), n, scratch.data());
-    return r;
-}
-
-// for compatibility with your test code
-inline bul karatsu_test(const bui& a, const bui& b) {
-    return karatsuba_be_top(a, b);
-}
+// ALWAYS_INLINE void split_bui(const bui &x, bui &high, bui &low, u32 n) {
+// 	std::copy_n(x.begin(), n, high.begin() + (BI_N - n));
+// 	std::copy(x.begin() + n, x.end(), low.begin() + n);
+// }
+//
+// inline bul karatsuba(const bui &a, const bui &b, const u32 n) {
+// 	bul r{};
+// 	if (n <= 16) return mul(a, b);
+// 	u32 half = n / 2;
+//
+// 	bui a1{}, a0{}, b1{}, b0{};
+// 	split_bui(a, a1, a0, half);
+// 	split_bui(b, b1, b0, half);
+//
+// 	bul z2 = karatsuba(a1, b1, half);
+// 	bul z0 = karatsuba(a0, b0, half);
+//
+// 	bui a_sum = add(a1, a0);
+// 	bui b_sum = add(b1, b0);
+// 	bul z1 = karatsuba(a_sum, b_sum, half);
+// 	sub_ip(z1, z2);
+// 	sub_ip(z1, z0);
+//
+// 	shift_limb_left(z2, 2 * half);
+// 	shift_limb_left(z1, half);
+//
+// 	add_ip(r, z0);
+// 	add_ip(r, z1);
+// 	add_ip(r, z2);
+// 	return r;
+// }
+//
+// constexpr size_t KARATSUBA_CUTOFF = 2;
+// // constexpr size_t KARATSUBA_CUTOFF = 4;
+// // constexpr size_t KARATSUBA_CUTOFF = 8;
+// // constexpr size_t KARATSUBA_CUTOFF = 16;
+// // constexpr size_t KARATSUBA_CUTOFF = 32; // tune this experimentally
+// inline void karatsuba_be_rec_old(const u32* a, const u32* b, u32* r, const u32 n, u32* scratch) {
+//     if (n <= KARATSUBA_CUTOFF) {
+//         mul_imp(a, b, r, n);
+//         return;
+//     }
+//
+//     u32 half = n / 2;
+//     const u32* a1 = a;
+//     const u32* a0 = a + half;
+//     const u32* b1 = b;
+//     const u32* b0 = b + half;
+//
+//     u32* z2 = r;       // high part
+//     u32* z0 = r + n;   // low part
+//     u32* z1 = scratch; // middle temp (2*half)
+//
+// 	const u32 maxlen = std::max(half, half);
+//
+//     u32* tmp_a = z1 + 2 * maxlen;
+//     u32* tmp_b = tmp_a + maxlen;
+//     u32* tmp_scratch = tmp_b + maxlen;
+//
+//     karatsuba_be_rec_old(a0, b0, z0, half, tmp_scratch); // z0 = a0 * b0
+//     karatsuba_be_rec_old(a1, b1, z2, half, tmp_scratch); // z2 = a1 * b1
+//
+// 	add_n(a1, a0, tmp_a, half); // tmp_a = a1 + a0
+// 	add_n(b1, b0, tmp_b, half); // tmp_b = b1 + b0
+//     karatsuba_be_rec_old(tmp_a, tmp_b, z1, half, tmp_scratch); // z1 = (a1 + a0) * (b1 + b0)
+//
+//     // z1 = z1 - z2 - z0
+// 	sub_n(z1, z2, z1, 2 * half);
+// 	sub_n(z1, z0, z1, 2 * half);
+//     // combine: r = z2 << (2*half*32) + z1 << (half*32) + z0
+// 	add_n(r + half, z1, r + half, 2 * half);
+// }
+//
+// inline void karatsuba_be_rec(const u32* a, const u32* b, u32* r, u32 n, u32* scratch) {
+// 	if (bu_is0(a, n) || bu_is0(b, n)) {
+// 		std::fill_n(r, 2 * n, 0);
+// 		return;
+// 	}
+// 	if (n <= KARATSUBA_CUTOFF) {
+// 		mul_imp(a, b, r, n);
+// 		return;
+// 	}
+//
+// 	const u32 half  = n / 2;
+// 	const u32 other = n - half;       // may be half+1 if n is odd
+//
+// 	// Big-endian split
+// 	const u32* a1 = a;           // high half
+// 	const u32* a0 = a + half;    // low  half
+// 	const u32* b1 = b;
+// 	const u32* b0 = b + half;
+//
+// 	// workspace layout
+// 	u32* z0 = scratch;                 // size 2*other
+// 	u32* z1 = z0 + 2 * other;          // size 2*other
+// 	u32* z2 = z1 + 2 * other;          // size 2*half
+// 	u32* tmpa = z2 + 2 * half;
+// 	u32* tmpb = tmpa + other;
+// 	u32* subscratch = tmpb + other;
+//
+// 	// z0 = a0 * b0
+// 	karatsuba_be_rec(a0, b0, z0, other, subscratch);
+//
+// 	// z2 = a1 * b1
+// 	karatsuba_be_rec(a1, b1, z2, half, subscratch);
+//
+// 	// tmpa = a0 + a1 (aligned to low indices)
+// 	std::fill_n(tmpa, other, 0);
+// 	std::fill_n(tmpb, other, 0);
+// 	std::copy(a0 + (other - half), a0 + other, tmpa + (other - half));
+// 	for (u32 i = 0; i < half; ++i)
+// 		tmpa[i] += a1[i];
+// 	std::copy(b0 + (other - half), b0 + other, tmpb + (other - half));
+// 	for (u32 i = 0; i < half; ++i)
+// 		tmpb[i] += b1[i];
+//
+// 	// z1 = (a0+a1)*(b0+b1)
+// 	karatsuba_be_rec(tmpa, tmpb, z1, other, subscratch);
+//
+// 	// z1 = z1 - z2 - z0
+// 	sub_n(z1 + (2 * other - 2 * half), z2, z1 + (2 * other - 2 * half), 2 * half);
+// 	sub_n(z1, z0, z1, 2 * other);
+//
+// 	// clear result
+// 	std::fill_n(r, 2 * n, 0);
+//
+// 	// combine (big-endian)
+// 	// copy z0 → low end
+// 	std::copy(z0 + 2 * other - n, z0 + 2 * other, r + 2 * n - 2 * other);
+//
+// 	// add z1 shifted by (other limbs)
+// 	add_n(r + (n - other), z1 + 2 * other - n, r + (n - other), 2 * other);
+//
+// 	// add z2 shifted by (2*other limbs)
+// 	add_n(r, z2 + 2 * half - n, r, 2 * half);
+// }
+//
+// inline u32 next_pow2(u32 x) {
+// 	if (x == 0) return 1;
+// 	x--;
+// 	x |= x >> 1;
+// 	x |= x >> 2;
+// 	x |= x >> 4;
+// 	x |= x >> 8;
+// 	x |= x >> 16;
+// 	x++;
+// 	return x;
+// }
+//
+// inline bul karatsuba_be_top(const bui& a, const bui& b) {
+//     constexpr size_t n = BI_N;
+// 	// u32 n = std::max(highest_limb(a), highest_limb(b));
+// 	// n = next_pow2(n) * 2;
+//     bul r{};
+//     std::array<u32, 6 * BI_N> scratch{};
+//     // std::array<u32, 8 * BI_N> scratch{};
+//     karatsuba_be_rec_old(a.data(), b.data(), r.data(), n, scratch.data());
+//     return r;
+// }
+//
+// // for compatibility with your test code
+// inline bul karatsu_test(const bui& a, const bui& b) {
+//     return karatsuba_be_top(a, b);
+// }
 
 #endif
