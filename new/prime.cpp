@@ -4,7 +4,7 @@
 #include <iostream>
 #include <sstream>
 
-#include "bigint.h"
+#include "../bigint.h"
 
 constexpr u32 POLY_R = 14;
 struct Poly : std::array<bui, POLY_R>{};

@@ -455,7 +455,7 @@ static Cigint gen_prime() {
 	return x;
 }
 
-#include "../benchmark.h"
+#include "../old/benchmark.h"
 // observable sink to block DCE
 static volatile u32 g_sink = 0;
 inline void consume(const Cigint& x) {

@@ -6,7 +6,7 @@
 #define CIGINT_N (512 / 32)
 #include <iomanip>
 
-#include "cigint.h"
+#include "../cigint.h"
 
 using namespace std::chrono;
 
@@ -24,7 +24,7 @@ void cigint_fill_more_random(Cigint *cig) {
 	for (size_t i = 0; i < randomLimb; i++) cig->data[i] =  (u32)rand() << 16 ^ (u32)rand();
 }
 
-#include "benchmark.h"
+#include "../benchmark.h"
 // observable sink to block DCE
 static volatile u32 g_sink = 0;
 inline void consume(const Cigint& x) {

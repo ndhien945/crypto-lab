@@ -387,10 +387,14 @@ ALWAYS_INLINE void mul_imp(const u32* a, const u32* b, u32* r, const u32 n) {
 			r[i + j + 1] = (u32)p;
 			c = p >> 32;
 		}
-		if (r[i] + c < r[i]) {
-			printf("LOL,ov\n");
+		u32 k = i;
+		while (c) {
+			u64 s = (u64)r[k] + c;
+			r[k] = (u32)s;
+			c = s >> 32;
+			if (k == 0) break;
+			k--;
 		}
-		r[i] += c;
 	}
 }
 

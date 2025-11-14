@@ -6,7 +6,7 @@
 // #define BI_N (32768 / 32)
 // #define BI_N (512 / 32)
 // fail with N odd
-#include "bigint.h"
+#include "../bigint.h"
 
 int main() {
 	// bui a = bui_from_u32(2);
