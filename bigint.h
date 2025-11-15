@@ -1093,7 +1093,6 @@ inline bul bul_binary_flood1(u32 k) {
 	return r;
 }
 
-
 // Extended Euclidean algorithm
 bool mod_inverse(bui a, const bui &m, bui &inv_out) {
 	if (bui_is0(m) || bui_is0(a)) return false;
@@ -1189,15 +1188,15 @@ bool mod_inverse_modded(const bui &a, const bui &m, bui &inv_out) {
 		}
 		std::swap(t0, t1);
 	}
-
-	// r0 = gcd(a, m) so if gcd != 1 -> no inverse
 	if (cmp(r0, bui1()) != 0) return false;
 	inv_out = t0;
 	return true;
 }
 
-#define REDC_BIT(x)
-
+// https://en.wikipedia.org/wiki/Montgomery_modular_multiplication
+// https://cp-algorithms.com/algebra/montgomery_multiplication.html
+// https://en.algorithmica.org/hpc/number-theory/montgomery/
+// MVP: https://www.nayuki.io/page/montgomery-reduction-algorithm
 struct MontgomeryReducer {
 	bui modulus;      // must be odd >= 3
 	bul reducer;      // power of 2
@@ -1205,26 +1204,17 @@ struct MontgomeryReducer {
 	int reducerBits;  // log2(reducer)
 	bui reciprocal;   // reducer^-1 mod modulus
 	bui factor;       // (reducer * reciprocal - 1) / modulus
-	bui convertedOne; // convertIn(1)
+	bui convertedOne; // convertIn(1) aka reducer mod modulus
 	static bui modInverse(const bui& a, const bui& m);
 
 	MontgomeryReducer(const bui& modulus) : modulus(modulus) {
 		assert(get_bit(modulus, 0) && cmp(modulus, bui1()) == 1);
-		// compute reducer as a power of 2 bigger than modulus
-		// printf("  mBits RAW: %d\n", highest_bit(modulus));
 		reducerBits = (highest_bit(modulus) / SBU32 + 1) * SBU32;
-		if (reducerBits > BI_BIT) reducerBits = BI_BIT; // cap at 512
-		// printf("reducerBits = %d\n", reducerBits);
+		if (reducerBits > BI_BIT) reducerBits = BI_BIT;
 		reducer = bul_pow2(reducerBits);
-		// printf("reducer = %s\n", bul_to_dec(reducer).c_str());
 		mask = bui_binary_flood1(reducerBits);
-		// printf("mask = %s\n", bui_to_dec(mask).c_str());
 		convertedOne = mod_native(reducer, modulus);
-		// printf("c1 = %s\n", bui_to_dec(convertedOne).c_str());
-		{
-			mod_inverse_old(convertedOne, modulus, reciprocal); // reducer^-1 mod modulus
-		}
-		// printf("reciprocal: %s\n", bui_to_dec(reciprocal).c_str());
+		mod_inverse_old(convertedOne, modulus, reciprocal); // reducer^-1 mod modulus
 		{
 			auto tmp = bui_to_bul(reciprocal);
 			shift_left_ip(tmp, reducerBits);
@@ -1247,9 +1237,7 @@ struct MontgomeryReducer {
 
 	// Multiply two Montgomery-form numbers
 	bui multiply(const bui& x, const bui& y) const {
-		if (!(cmp(x, modulus) < 0 && cmp(y, modulus) < 0)) {
 		assert(cmp(x, modulus) < 0 && cmp(y, modulus) < 0);
-		}
 		bul product = mul(x, y);
 		bui t_low = bul_low(product);
 		bitwise_and_ip(t_low, mask);

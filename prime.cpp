@@ -1,4 +1,4 @@
-#define BI_BIT 1024
+#define BI_BIT 512
 #include <chrono>
 #include <iomanip>
 #include <iostream>
@@ -8,25 +8,6 @@
 
 constexpr u32 POLY_R = 14;
 struct Poly : std::array<bui, POLY_R>{};
-
-// static void linconv7_mod(const bui A[7], const bui B[7], const bui& modn, bui out[13]) {
-// 	bool a_skips[7] = {false};
-// 	bool b_skips[7] = {false};
-// 	for (int i = 0; i < 7; i++) {
-// 		a_skips[i] = bui_is0(A[i]);
-// 		b_skips[i] = bui_is0(B[i]);
-// 	}
-// 	for (int i = 0; i < 13; ++i) out[i] = {};
-// 	for (int i = 0; i < 7; ++i) {
-// 		if (a_skips[i]) continue;
-// 		for (int j = 0; j < 7; ++j) {
-// 			if (b_skips[j]) continue;
-// 			bui p = A[i];
-// 			mul_mod_ip(p, B[j], modn);
-// 			add_mod_ip(out[i + j], p, modn);
-// 		}
-// 	}
-// }
 
 static void poly_mul_mod_ip(Poly &A, const Poly &B, const bui& m) {
 	bool a_skips[POLY_R] = {false};
@@ -159,9 +140,6 @@ void printBuiA(bui *buis, int n) {
 static bool aks_like_prime(const bui &n) {
 	if (!get_bit(n, 0)) return false;
 	Poly p = poly_pow_1x_mont(n);
-	// printBuiA(p.data(), POLY_R);
-	// p = poly_pow_1x(n);
-	// printBuiA(p.data(), POLY_R);
 	bui b1 = bui1();
 	if (cmp(p[0], b1) != 0) return false;
 	u32 k;
@@ -194,52 +172,93 @@ bui read_bui_le() {
 	return bui_from_hex(be_hex);
 }
 
-int main(int argc, char* argv[]) {
-	if (argc != 3) {
-		return 1;
-	}
+#include <random>
+static void randomize(bui &x) {
+	std::random_device rd; std::mt19937 gen(rd());
+	std::uniform_int_distribution<u32> dist(0, UINT32_MAX);
+	size_t limbs = 1 + gen() % BI_N;
+	for (u32 &i : x) i = 0;
+	for (size_t i = limbs; i-- > 0;) x[i] = dist(gen);
+}
 
-	if (!freopen(argv[1], "r", stdin)) return 1;
+static bui random_odd() {
+	bui x; randomize(x);
+	set_bit_ip(x, 0, 1);
+	return x;
+}
+
+
+static bool has_small_factor(const bui &n) {
+	static const int SMALL_PRIMES[] = {
+		2, 3, 5, 7,11,13,17,19,23,29,31,37,41,
+	   43,47,53,59,61,67,71,73,79,83,89,97
+   };
+	for (int p : SMALL_PRIMES) {
+		u32 r = 0; bui tmp;
+		u32divmod(n, (u32)p, tmp, r);
+		if (r == 0) return cmp(n, bui_from_u32((u32)p)) != 0;
+	}
+	return false;
+}
+
+static bui gen_prime() {
+	bui x;
+	do {
+		x = random_odd();
+		// printf("Testing: %s\n", bui_to_dec(x).c_str());
+	}
+	while (has_small_factor(x) || !aks_like_prime(x));
+	return x;
+}
+
+int main(int argc, char* argv[]) {
+	// bui p = gen_prime();
+	// if (argc != 3) {
+		// return 1;
+	// }
+
+	// if (!freopen(argv[1], "r", stdin)) return 1;
 	// if (!freopen(argv[2], "w", stdout)) return 1;
 
 	// std::ios::sync_with_stdio(false);
 	// std::cin.tie(nullptr);
 
-	bui p = read_bui_le();
-	printf("%s\n", bui_to_dec(p).c_str());
-	std::cout << (aks_like_prime(p) ? "prime" : "composite") << '\n';
-
+	// bui p = read_bui_le();
+	// printf("%s\n", bui_to_dec(p).c_str());
+	// std::cout << (aks_like_prime(p) ? "prime" : "composite") << '\n';
+	// return 0;
 	// Poly a = {bui1(), bui1()};
 	// printBuiA(a.data(), POLY_R);
 	// poly_sqr_mod_ip(a, bui_from_u32(100007));
 	// printBuiA(a.data(), POLY_R);
 	//
 	// // Benchmark optimized version
-	// Poly b;
-	// int N = 3;
-	// bui n = bui_from_dec("6274904334290417405341624571932224150456224549917673444239237760272785701939526927698156030175801211624849856326839256526253153336777911614668501375751381");
-	bui n = bui_from_dec("91");
-	printf("%s\n", bui_to_dec(n).c_str());
+	Poly b;
+	int N = 10;
+	bui n = bui_from_dec("2375722564917970157320116337204050708931121170444781122212858918412240257381260002781986878057961840094996175940701756817032101879948553727376736173162497");
+	// bui n = bui_from_dec("91");
+	// printf("%s\n", bui_to_dec(n).c_str());
 	if (aks_like_prime(n)) {
 		printf("PRIME\n");
 	} else {
 		printf("COMPOSITE\n");
 	}
+	return 0;
 	// // bui n = bui_from_dec("3");
-	// auto start = std::chrono::high_resolution_clock::now();
-	// b = poly_pow_1x(n);
-	// auto end = std::chrono::high_resolution_clock::now();
-	// auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-	// // Print results
-	// std::cout << "Dur: " << duration.count() / N << " ns per run\n";
-	// printBuiA(b.data(), b.size());
-	// start = std::chrono::high_resolution_clock::now();
-	// b = poly_pow_1x_mont(n);
-	// end = std::chrono::high_resolution_clock::now();
-	// duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-	// // Print results
-	// std::cout << "Dur: " << duration.count() / N << " ns per run\n";
-	// printBuiA(b.data(), b.size());
+	auto start = std::chrono::high_resolution_clock::now();
+	b = poly_pow_1x(n);
+	auto end = std::chrono::high_resolution_clock::now();
+	auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+	// Print results
+	std::cout << "Dur: " << duration.count() / N << " ns per run\n";
+	printBuiA(b.data(), b.size());
+	start = std::chrono::high_resolution_clock::now();
+	b = poly_pow_1x_mont(n);
+	end = std::chrono::high_resolution_clock::now();
+	duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
+	// Print results
+	std::cout << "Dur: " << duration.count() / N << " ns per run\n";
+	printBuiA(b.data(), b.size());
 	//
 	// for (int i = 1; i <= 7; ++i) {
 	// 	printf("%2d: ", i);
