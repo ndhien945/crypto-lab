@@ -9,6 +9,7 @@
 #include <future>
 #include <string>
 #include <sstream>
+#include <random>
 
 typedef uint32_t u32;
 typedef uint64_t u64;
@@ -35,7 +36,12 @@ typedef uint64_t u64;
 #endif
 
 // big endian: data[0] = MSW
-// bui a = 1 -> a = [0,0,...,1] -> a[BI_N - 1]=1
+// eg: assign 1 to bui: a[BI_N - 1] = 1;
+// eg: assign 0x12345678'9ABCDEF0'11223344'55667788 to bui
+// a[BI_N - 4] = 0x55667788u;
+// a[BI_N - 3] = 0x11223344u;
+// a[BI_N - 2] = 0x9ABCDEF0u;
+// a[BI_N - 1] = 0x12345678u;
 struct bui : std::array<u32, BI_N> {};
 struct bul : std::array<u32, BI_N * 2> {};
 struct MontgomeryReducer;
@@ -317,6 +323,20 @@ inline int cmp(const bul& a, const bui& b) {
 			return a_low > b_val ? 1 : -1;
 	}
 	return 0;
+}
+
+static void randomize_ip(bui &x) {
+	std::random_device rd; std::mt19937 gen(rd());
+	std::uniform_int_distribution<u32> dist(0, UINT32_MAX);
+	size_t limbs = 1 + gen() % BI_N;
+	for (u32 &i : x) i = 0;
+	for (size_t i = limbs; i-- > 0;) x[i] = dist(gen);
+}
+
+static bui random_odd() {
+	bui x; randomize_ip(x);
+	set_bit_ip(x, 0, 1);
+	return x;
 }
 
 ALWAYS_INLINE u32 add_ip_n_imp(u32* a, const u32* b, u32 n) {
