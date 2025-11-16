@@ -39,12 +39,36 @@ typedef uint64_t u64;
 // big endian: data[0] = MSW
 // eg: assign 1 to bui: a[BI_N - 1] = 1;
 // eg: assign 0x12345678'9ABCDEF0'11223344'55667788 to bui
-// a[BI_N - 4] = 0x55667788u;
-// a[BI_N - 3] = 0x11223344u;
-// a[BI_N - 2] = 0x9ABCDEF0u;
-// a[BI_N - 1] = 0x12345678u;
-struct bui : std::array<u32, BI_N> {};
-struct bul : std::array<u32, BI_N * 2> {};
+// a[BI_N - 1] = 0x55667788u;
+// a[BI_N - 2] = 0x11223344u;
+// a[BI_N - 3] = 0x9ABCDEF0u;
+// a[BI_N - 4] = 0x12345678u;
+struct bui : std::array<u32, BI_N> {
+	using base_type = std::array<u32, BI_N>;
+	constexpr bui() : base_type{} {}
+	static constexpr bui zero() { return bui{}; }
+	static constexpr bui one() {
+		bui r{}; r[BI_N - 1] = 1;
+		return r;
+	}
+	static constexpr bui from_u32(u32 x) {
+		bui r{}; r[BI_N - 1] = x;
+		return r;
+	}
+};
+struct bul : std::array<u32, BI_N * 2> {
+	using base_type = std::array<u32, BI_N * 2>;
+	constexpr bul() : base_type{} {}
+	static constexpr bul zero() { return bul{}; }
+	static constexpr bul one() {
+		bul r{}; r[BI_N * 2 - 1] = 1;
+		return r;
+	}
+	static constexpr bul from_u32(u32 x) {
+		bul r{}; r[BI_N * 2 - 1] = x;
+		return r;
+	}
+};
 struct MontgomeryReducer;
 
 std::string bui_to_dec(const bui& x);
@@ -64,29 +88,13 @@ bul bul_pow2(u32 k);
 void dbl_ip(bui &x);
 u32 u32_divmod_bul(const bul &a, u32 d, bul &q);
 
-constexpr bui bui0() { return {}; }
+constexpr bui bui0() { return bui::zero(); }
+constexpr bui bui1() { return bui::one(); }
+constexpr bui bui_from_u32(u32 x) { return bui::from_u32(x); }
 
-constexpr bui bui1() {
-	bui r = {}; r[BI_N - 1] = 1;
-	return r;
-}
-
-constexpr bui bui_from_u32(const u32 x) {
-	bui r = {}; r[BI_N - 1] = x;
-	return r;
-}
-
-constexpr bul bul0() { return {}; }
-
-constexpr bul bul1() {
-	bul r = {}; r[BI_N * 2 - 1] = 1;
-	return r;
-}
-
-inline bul bul_from_u32(const u32 x) {
-	bul r = {}; r[BI_N * 2 - 1] = x;
-	return r;
-}
+constexpr bul bul0() { return bul::zero(); }
+constexpr bul bul1() { return bul::one(); }
+inline bul bul_from_u32(u32 x) { return bul::from_u32(x); }
 
 inline u32 get_bit(u32 num, u32 pos) { return num >> pos & 1; }
 
@@ -175,6 +183,12 @@ inline u32 highest_limb(const bul &x) {
 	return 0;
 }
 
+// Big long: shift left by l whole limbs (each limb is 32 bits) in big‑endian representation.
+// Storage is [x[0] = MSW, ..., x[2*BI_N-1] = LSW].
+// eg: n = 5, l = 1
+//   before: index  0    1    2    3    4
+//           value  a0   a1   a2   a3   a4
+//   after:         a1   a2   a3   a4   0   // multiplied by 2^(32*l)
 inline void shift_limb_left(bul &x, u32 l) {
 	if (l == 0) return;
 	if (l >= BI_N * 2) {
@@ -240,7 +254,7 @@ bui shift_left(bui x, u32 k) {
 }
 
 // shift left mode (r = x * 2^k mod m)
-bui shift_left_mod(bui x, int shift, const bui& m) {
+inline bui shift_left_mod(bui x, u32 shift, const bui& m) {
 	bui p2 = bui_pow2(shift);
 	mul_mod_ip(x, p2, m);
 	return x;
@@ -871,7 +885,7 @@ bui read_bui_le() {
 // Divide a double-width big-int (bul, MSW at index 0) by a 32-bit divisor.
 // q := a / d (quotient), returns remainder r = a % d.
 // Requires: d != 0
-u32 u32_divmod_bul(const bul &a, u32 d, bul &q) {
+inline u32 u32_divmod_bul(const bul &a, u32 d, bul &q) {
 	u64 rem = 0;
 	for (u32 i = 0; i < BI_N * 2; ++i) q[i] = 0;
 
@@ -1200,7 +1214,7 @@ bool mod_inverse_old(bui a, const bui &m, bui &inv_out) {
 	return true;
 }
 
-// Extended Euclidean algorithm, input a is modded by m
+// Extended Euclidean algorithm, input "a" is modded by m
 bool mod_inverse_modded(const bui &a, const bui &m, bui &inv_out) {
 	if (bui_is0(m) || bui_is0(a)) return false;
 	bui r0 = m, r1 = a;
@@ -1227,18 +1241,27 @@ bool mod_inverse_modded(const bui &a, const bui &m, bui &inv_out) {
 	return true;
 }
 
-// https://en.wikipedia.org/wiki/Montgomery_modular_multiplication
-// https://cp-algorithms.com/algebra/montgomery_multiplication.html
-// https://en.algorithmica.org/hpc/number-theory/montgomery/
-// MVP: https://www.nayuki.io/page/montgomery-reduction-algorithm
+/**
+ * @brief Montgomery modular arithmetic helper for fixed-size big integers.
+ *
+ * This struct precomputes all constants needed to perform fast modular
+ * multiplication and exponentiation modulo an odd big integer using the
+ * Montgomery reduction algorithm in the bui/bul representation.
+ *
+ * Ref:
+ * [1] https://en.wikipedia.org/wiki/Montgomery_modular_multiplication
+ * [2] https://cp-algorithms.com/algebra/montgomery_multiplication.html
+ * [3] https://en.algorithmica.org/hpc/number-theory/montgomery/
+ * [4] MVP: https://www.nayuki.io/page/montgomery-reduction-algorithm
+ */
 struct MontgomeryReducer {
-	bui modulus;      // must be odd >= 3
-	bul reducer;      // power of 2
-	bui mask;         // reducer - 1
-	int reducerBits;  // log2(reducer)
-	bui reciprocal;   // reducer^-1 mod modulus
-	bui factor;       // (reducer * reciprocal - 1) / modulus
-	bui convertedOne; // convertIn(1) aka reducer mod modulus
+	bui modulus;        // must be odd >= 3
+	bul reducer{};      // power of 2
+	bui mask{};         // reducer - 1
+	u32 reducerBits;    // log2(reducer)
+	bui reciprocal{};   // reducer^-1 mod modulus
+	bui factor{};       // (reducer * reciprocal - 1) / modulus
+	bui convertedOne{}; // convertIn(1) aka reducer mod modulus
 	static bui modInverse(const bui& a, const bui& m);
 
 	MontgomeryReducer(const bui& modulus) : modulus(modulus) {
@@ -1256,6 +1279,13 @@ struct MontgomeryReducer {
 			bul rem;
 			divmod(tmp, modulus, factor, rem);
 		}
+		std::cout << "modulus      = " << bui_to_dec(modulus)      << "\n";
+		std::cout << "reducer      = " << bul_to_dec(reducer)      << "\n";
+		std::cout << "mask         = " << bui_to_dec(mask)         << "\n";
+		std::cout << "reducerBits  = " << reducerBits              << "\n";
+		std::cout << "reciprocal   = " << bui_to_dec(reciprocal)   << "\n";
+		std::cout << "factor       = " << bui_to_dec(factor)       << "\n";
+		std::cout << "convertedOne = " << bui_to_dec(convertedOne) << "\n";
 	}
 
 	// convert a standard integer into Montgomery form
@@ -1300,8 +1330,16 @@ struct MontgomeryReducer {
 	}
 };
 
+// m > 1 and m is odd
+inline bool is_valid_modulus(const bui &m) {
+	return cmp(m, bui1()) > 0 && get_bit(m, 0);
+}
+
 // Montgomery power (faster than naive version for big num), m must be odd
 inline bui mr_pow_mod(bui x, const bui& e, const bui& m) {
+	if (!is_valid_modulus(m)) {
+		return pow_mod(x, e, m);
+	}
 	MontgomeryReducer mr(m);
 	x = mr.convertIn(x);
 	bui r = mr.pow(x, e);
