@@ -4,7 +4,7 @@
 #include <cctype>
 #include <cstdio>
 
-#define BI_BIT 512
+#define BI_BIT 1024
 #include "bigint.h"
 using namespace std;
 
@@ -41,7 +41,7 @@ int main(int argc, char* argv[]) {
     bui k = read_bui_le();
     bui x = read_bui_le();
 
-    bui y = pow_mod(x, k, N);
+    bui y = mr_pow_mod(x, k, N);
 
     cout << bui_to_hex_le(y) << "\n";
     return 0;

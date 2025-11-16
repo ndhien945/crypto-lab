@@ -1153,25 +1153,6 @@ static inline void sub_mod_ip(bui& a, const bui& b, const bui& m) {
 }
 
 // Extended Euclidean algorithm
-bool mod_inverse(bui a, const bui &m, bui &inv_out) {
-	if (bui_is0(m) || bui_is0(a)) return false;
-	if (cmp(a, m) >= 0) a = mod_native(a, m);
-	bui r0 = m, r1 = a;
-	bui t0{}, t1 = bui1();
-	while (!bui_is0(r1)) {
-		bui q, rem; divmod(r0, r1, q, rem);
-		r0 = r1; r1 = rem;
-		bul prod{}; mul_ref(q, t1, prod);
-		bui qtm = mod_native(prod, m);
-		sub_mod_ip(t0, qtm, m);
-		std::swap(t0, t1);
-	}
-	if (cmp(r0, bui1()) != 0) return false;
-	inv_out = t0;
-	return true;
-}
-
-// Extended Euclidean algorithm
 bool mod_inverse_old(bui a, const bui &m, bui &inv_out) {
 	// invalid modulus or zero
 	if (bui_is0(m)) return false;
@@ -1214,30 +1195,42 @@ bool mod_inverse_old(bui a, const bui &m, bui &inv_out) {
 	return true;
 }
 
-// Extended Euclidean algorithm, input "a" is modded by m
-bool mod_inverse_modded(const bui &a, const bui &m, bui &inv_out) {
-	if (bui_is0(m) || bui_is0(a)) return false;
+// Extended Euclidean algorithm: find a^{-1} mod m
+bool mod_inverse(const bui& a_in, const bui& m, bui& inv_out) {
+	if (bui_is0(m)) return false; // invalid modulus
+	bui a = a_in;
+	if (cmp(a, m) >= 0) a = mod_native(a, m);      // reduce a mod m
+	if (bui_is0(a)) return false; // 0 has no inverse
+
 	bui r0 = m, r1 = a;
 	bui t0{}, t1 = bui1();
+
 	while (!bui_is0(r1)) {
-		// q = r0 / r1, rem = r0 % r1
 		bui q, rem;
-		divmod(r0, r1, q, rem);
-		r0 = r1, r1 = rem;
-		bul prod{};
-		mul_ref(q, t1, prod);  // prod = q * t1
-		bui qtm_rem = mod_native(prod, m); // qtm_rem = (prod) % m
-		if (cmp(t0, qtm_rem) >= 0) {
-			sub_ip(t0, qtm_rem);
+		divmod(r0, r1, q, rem); // r0 = q*r1 + rem
+		r0 = r1;
+		r1 = rem;
+
+		// t_new = (t0 - q * t1) mod m
+		bui qt = t1;
+		mul_mod_ip(qt, q, m); // qt = (q * t1) mod m
+
+		bui tnew;
+		if (cmp(t0, qt) >= 0) {
+			tnew = t0;
+			sub_ip(tnew, qt); // tnew = t0 - qt
 		} else {
-			t0 = m;
-			sub_ip(qtm_rem, t0);
-			sub_ip(t0, qtm_rem);
+			tnew = m;
+			sub_ip(qt, t0);   // qt = qt - t0
+			sub_ip(tnew, qt); // tnew = m - (qt - t0)
 		}
-		std::swap(t0, t1);
+
+		t0 = t1;
+		t1 = tnew;
 	}
-	if (cmp(r0, bui1()) != 0) return false;
-	inv_out = t0;
+
+	if (cmp(r0, bui1()) != 0) return false;        // gcd != 1 -> no inverse
+	inv_out = t0;                                  // already in [0, m)
 	return true;
 }
 
