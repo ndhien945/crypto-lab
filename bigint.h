@@ -1279,13 +1279,13 @@ struct MontgomeryReducer {
 			bul rem;
 			divmod(tmp, modulus, factor, rem);
 		}
-		std::cout << "modulus      = " << bui_to_dec(modulus)      << "\n";
-		std::cout << "reducer      = " << bul_to_dec(reducer)      << "\n";
-		std::cout << "mask         = " << bui_to_dec(mask)         << "\n";
-		std::cout << "reducerBits  = " << reducerBits              << "\n";
-		std::cout << "reciprocal   = " << bui_to_dec(reciprocal)   << "\n";
-		std::cout << "factor       = " << bui_to_dec(factor)       << "\n";
-		std::cout << "convertedOne = " << bui_to_dec(convertedOne) << "\n";
+		// std::cout << "modulus      = " << bui_to_dec(modulus)      << "\n";
+		// std::cout << "reducer      = " << bul_to_dec(reducer)      << "\n";
+		// std::cout << "mask         = " << bui_to_dec(mask)         << "\n";
+		// std::cout << "reducerBits  = " << reducerBits              << "\n";
+		// std::cout << "reciprocal   = " << bui_to_dec(reciprocal)   << "\n";
+		// std::cout << "factor       = " << bui_to_dec(factor)       << "\n";
+		// std::cout << "convertedOne = " << bui_to_dec(convertedOne) << "\n";
 	}
 
 	// convert a standard integer into Montgomery form
@@ -1308,8 +1308,9 @@ struct MontgomeryReducer {
 		t_low = mul_low_fast(t_low, factor);
 		bitwise_and_ip(t_low, mask);
 		auto tmp2 = mul(t_low, modulus);
-		add_ip(product, tmp2);
+		u32 c = add_ip_n_imp(product.data(), tmp2.data(), BI_N * 2);
 		shift_right_ip(product, reducerBits);
+		if (c) add_ip(product, bul1());
 		if (cmp(product, modulus) >= 0) {
 			sub_ip(product, bui_to_bul(modulus));
 		}
